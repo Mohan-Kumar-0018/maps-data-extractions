@@ -2,7 +2,7 @@ VENV := venv
 PYTHON := $(VENV)/bin/python
 PIP := $(VENV)/bin/pip
 
-.PHONY: install run preview test clean setup-db
+.PHONY: install run preview test clean setup-db reset-db
 
 install:
 	$(PIP) install -r requirements.txt
@@ -18,6 +18,10 @@ test: install
 	$(PYTHON) test_single.py $(ARGS)
 
 setup-db:
+	psql "$(DATABASE_URL)" -f migrations/001_create_places_info.sql
+
+reset-db:
+	psql "$(DATABASE_URL)" -c "DROP TABLE IF EXISTS places_info CASCADE;"
 	psql "$(DATABASE_URL)" -f migrations/001_create_places_info.sql
 
 clean:

@@ -2,9 +2,7 @@
 """CLI entry point for the Google Maps polygon scraper."""
 
 import argparse
-import csv
 import logging
-import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -12,6 +10,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from scraper.kml_parser import parse_kml
 from scraper.sampler import generate_sample_points, calculate_area_km2
 from scraper.browser import search_and_extract
+from scraper.db import PlacesDB
 from scraper.dedup import Deduplicator
 from scraper.models import Business
 from scraper.progress import ProgressTracker
@@ -32,23 +31,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--kml", required=True, help="Path to KML file with polygon boundary")
     parser.add_argument("--category", required=True, help="Search category (e.g. 'restaurants')")
     parser.add_argument("--workers", type=int, default=4, help="Number of parallel browser workers (default: 4)")
-    parser.add_argument("--output", default="output/results.csv", help="Output CSV path (default: output/results.csv)")
     parser.add_argument("--max-results", type=int, default=10, help="Max results per search point (default: 10)")
-    parser.add_argument("--db", action="store_true", help="Also store results in PostgreSQL (requires DATABASE_URL or DB_* env vars)")
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
 
-    # 0. Optional DB connection
-    db = None
-    if args.db:
-        try:
-            from scraper.db import PlacesDB
-            db = PlacesDB()
-        except Exception as e:
-            logger.warning(f"Could not connect to PostgreSQL, continuing CSV-only: {e}")
+    db = PlacesDB()
 
     # 1. Parse KML
     logger.info(f"Parsing KML file: {args.kml}")
@@ -65,31 +55,21 @@ def main() -> None:
     tracker = ProgressTracker(polygon_coords, sample_points, area_km2)
     server = start_live_server(tracker)
 
-    # 4. Open CSV and write header immediately so partial results survive interrupts
-    os.makedirs(os.path.dirname(args.output) or ".", exist_ok=True)
-    csv_file = open(args.output, "w", newline="", encoding="utf-8")
-    writer = csv.writer(csv_file)
-    writer.writerow(Business.csv_headers())
-    csv_file.flush()
-
     total_written = 0
     write_lock = threading.Lock()
 
     def _on_extract(biz: Business, point_idx: int) -> None:
-        """Called per-business from browser thread. Dedup + write to CSV immediately."""
+        """Called per-business from browser thread. Dedup + insert to DB."""
         nonlocal total_written
         kept = dedup.filter_businesses([biz])
         if kept:
             with write_lock:
-                writer.writerow(kept[0].to_csv_row())
-                csv_file.flush()
                 total_written += 1
                 tracker.add_business(point_idx)
-            if db:
-                try:
-                    db.insert_business(kept[0])
-                except Exception as e:
-                    logger.warning(f"DB insert failed for {kept[0].place_id}: {e}")
+            try:
+                db.insert_business(kept[0])
+            except Exception as e:
+                logger.warning(f"DB insert failed for {kept[0].place_id}: {e}")
 
     try:
         if args.workers <= 1:
@@ -133,14 +113,10 @@ def main() -> None:
 
         logger.info(f"Scraping complete: {total_written} unique businesses inside polygon")
     except KeyboardInterrupt:
-        logger.info(f"Interrupted — saved {total_written} businesses to {args.output}")
+        logger.info(f"Interrupted — inserted {total_written} businesses to DB")
     finally:
-        csv_file.close()
-        if db:
-            db.close()
+        db.close()
         server.shutdown()
-
-    logger.info(f"Output: {args.output}")
 
 
 if __name__ == "__main__":
