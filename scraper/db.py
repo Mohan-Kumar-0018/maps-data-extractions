@@ -237,6 +237,120 @@ class PlacesDB:
                 cur.execute(sql)
                 return cur.rowcount
 
+    # ── enrichment (places_info.info_status) ────────────────────────
+
+    def fetch_pending_enrichments(self, limit: int | None = None) -> List[dict]:
+        """Return places_info rows needing enrichment."""
+        sql = "SELECT id, google_maps_url FROM places_info WHERE info_status = 'pending' ORDER BY id"
+        if limit:
+            sql += f" LIMIT {int(limit)}"
+        with self._conn.cursor() as cur:
+            cur.execute(sql)
+            return [{"id": row[0], "google_maps_url": row[1]} for row in cur.fetchall()]
+
+    def claim_enrichment(self, row_id: int) -> bool:
+        """Atomically set a pending enrichment to in_progress. Returns True if claimed."""
+        sql = """
+            UPDATE places_info
+            SET info_status = 'in_progress', updated_at = NOW()
+            WHERE id = %s AND info_status = 'pending'
+        """
+        with self._conn.cursor() as cur:
+            cur.execute(sql, (row_id,))
+            return cur.rowcount == 1
+
+    def update_enrichment(self, row_id: int, total_reviews: int | None, phone: str, website: str) -> None:
+        """Write enriched fields and mark done."""
+        sql = """
+            UPDATE places_info
+            SET total_reviews = COALESCE(%s, total_reviews),
+                phone = CASE WHEN %s = '' THEN phone ELSE %s END,
+                website = CASE WHEN %s = '' THEN website ELSE %s END,
+                info_status = 'done',
+                updated_at = NOW()
+            WHERE id = %s
+        """
+        with self._conn.cursor() as cur:
+            cur.execute(sql, (total_reviews, phone, phone, website, website, row_id))
+
+    def mark_enrichment_failed(self, row_id: int) -> None:
+        """Mark an enrichment as failed."""
+        sql = """
+            UPDATE places_info
+            SET info_status = 'failed', updated_at = NOW()
+            WHERE id = %s
+        """
+        with self._conn.cursor() as cur:
+            cur.execute(sql, (row_id,))
+
+    def reset_in_progress_enrichments(self) -> int:
+        """Reset stale in_progress enrichments back to pending."""
+        sql = """
+            UPDATE places_info
+            SET info_status = 'pending', updated_at = NOW()
+            WHERE info_status = 'in_progress'
+        """
+        with self._conn.cursor() as cur:
+            cur.execute(sql)
+            return cur.rowcount
+
+    # ── contact extraction (places_info.contact_status) ──────────────
+
+    def fetch_pending_contacts(self, limit: int | None = None) -> List[dict]:
+        """Return places_info rows needing contact extraction (must have a website)."""
+        sql = "SELECT id, website FROM places_info WHERE contact_status = 'pending' AND website != '' ORDER BY id"
+        if limit:
+            sql += f" LIMIT {int(limit)}"
+        with self._conn.cursor() as cur:
+            cur.execute(sql)
+            return [{"id": row[0], "website": row[1]} for row in cur.fetchall()]
+
+    def claim_contact(self, row_id: int) -> bool:
+        """Atomically set a pending contact to in_progress. Returns True if claimed."""
+        sql = """
+            UPDATE places_info
+            SET contact_status = 'in_progress', updated_at = NOW()
+            WHERE id = %s AND contact_status = 'pending'
+        """
+        with self._conn.cursor() as cur:
+            cur.execute(sql, (row_id,))
+            return cur.rowcount == 1
+
+    def update_contact(self, row_id: int, emails: str, phones: str, social_media: str) -> None:
+        """Write extracted contact fields and mark done."""
+        sql = """
+            UPDATE places_info
+            SET website_email = %s,
+                website_phone = %s,
+                social_media = %s,
+                contact_status = 'done',
+                updated_at = NOW()
+            WHERE id = %s
+        """
+        with self._conn.cursor() as cur:
+            cur.execute(sql, (emails, phones, social_media, row_id))
+
+    def mark_contact_failed(self, row_id: int) -> None:
+        """Mark a contact extraction as failed."""
+        sql = """
+            UPDATE places_info
+            SET contact_status = 'failed', updated_at = NOW()
+            WHERE id = %s
+        """
+        with self._conn.cursor() as cur:
+            cur.execute(sql, (row_id,))
+
+    def reset_in_progress_contacts(self) -> int:
+        """Reset stale in_progress contacts back to pending."""
+        sql = """
+            UPDATE places_info
+            SET contact_status = 'pending', updated_at = NOW()
+            WHERE contact_status = 'in_progress'
+        """
+        with self._conn.cursor() as cur:
+            cur.execute(sql)
+            return cur.rowcount
+
     # ── categories table ─────────────────────────────────────────────
 
     def insert_category(self, name: str) -> None:

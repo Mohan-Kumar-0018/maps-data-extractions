@@ -13,9 +13,16 @@ CREATE TABLE IF NOT EXISTS places_info (
     place_id        TEXT NOT NULL UNIQUE,
     category        TEXT NOT NULL DEFAULT '',
     duplicate_count INTEGER NOT NULL DEFAULT 0,
+    info_status     TEXT NOT NULL DEFAULT 'pending',
+    website_email   TEXT NOT NULL DEFAULT '',
+    website_phone   TEXT NOT NULL DEFAULT '',
+    social_media    TEXT NOT NULL DEFAULT '',
+    contact_status  TEXT NOT NULL DEFAULT 'pending',
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX IF NOT EXISTS idx_places_info_category ON places_info (category);
 CREATE INDEX IF NOT EXISTS idx_places_info_coords ON places_info (latitude, longitude);
+CREATE INDEX IF NOT EXISTS idx_places_info_status ON places_info (info_status);
+CREATE INDEX IF NOT EXISTS idx_places_contact_status ON places_info (contact_status);

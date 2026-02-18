@@ -15,12 +15,13 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from scraper.kml_parser import parse_kml
 from scraper.sampler import generate_sample_points, calculate_area_km2
-from scraper.browser import search_and_extract
+from scraper.browser import search_and_extract, extract_place_details
 from scraper.db import PlacesDB
 from scraper.dedup import PolygonFilter
 from scraper.models import Business
 from scraper.progress import ProgressTracker
 from scraper.live_server import start_live_server
+from scraper.website import extract_website_contacts
 
 logging.basicConfig(
     level=logging.INFO,
@@ -55,6 +56,16 @@ def build_parser() -> argparse.ArgumentParser:
     ep.add_argument("--workers", type=int, default=4, help="Number of parallel browser workers (default: 4)")
     ep.add_argument("--max-results", type=int, default=10, help="Max results per search point (default: 10)")
     ep.add_argument("--live", action="store_true", help="Start live progress dashboard (requires --kml)")
+
+    # ── enrich ───────────────────────────────────────────────────────
+    nr = sub.add_parser("enrich", help="Enrich places_info by visiting detail pages (resumable)")
+    nr.add_argument("--workers", type=int, default=4, help="Number of parallel browser workers (default: 4)")
+    nr.add_argument("--limit", type=int, default=None, help="Max number of places to enrich")
+
+    # ── contact ──────────────────────────────────────────────────────
+    ct = sub.add_parser("contact", help="Extract emails, phones, social links from business websites (resumable)")
+    ct.add_argument("--workers", type=int, default=4, help="Number of parallel workers (default: 4)")
+    ct.add_argument("--limit", type=int, default=None, help="Max number of places to process")
 
     return parser
 
@@ -237,6 +248,154 @@ def cmd_extract(args: argparse.Namespace) -> None:
             server.shutdown()
 
 
+# ── Step 3: enrich ─────────────────────────────────────────────────
+
+def cmd_enrich(args: argparse.Namespace) -> None:
+    """Visit each business detail page to extract phone, website, and review count."""
+    db = PlacesDB()
+
+    # Reset any in_progress enrichments from a previous interrupted run
+    reset_count = db.reset_in_progress_enrichments()
+    if reset_count:
+        logger.info(f"Reset {reset_count} interrupted in_progress enrichments back to pending")
+
+    pending = db.fetch_pending_enrichments(limit=args.limit)
+    if not pending:
+        logger.info("No pending enrichments. Nothing to do.")
+        db.close()
+        return
+
+    logger.info(f"Found {len(pending)} places to enrich")
+
+    done_count = 0
+    failed_count = 0
+    count_lock = threading.Lock()
+
+    def _enrich_one(idx: int, row: dict) -> None:
+        nonlocal done_count, failed_count
+        row_id = row["id"]
+        url = row["google_maps_url"]
+
+        if not db.claim_enrichment(row_id):
+            return
+
+        logger.info(f"Enriching {idx+1}/{len(pending)}: id={row_id}")
+        try:
+            details = extract_place_details(url)
+            db.update_enrichment(
+                row_id,
+                total_reviews=details["total_reviews"],
+                phone=details["phone"],
+                website=details["website"],
+            )
+            with count_lock:
+                done_count += 1
+            logger.info(f"Enriched id={row_id}: reviews={details['total_reviews']}, phone={details['phone']!r}, website={details['website']!r}")
+        except Exception as e:
+            db.mark_enrichment_failed(row_id)
+            with count_lock:
+                failed_count += 1
+            logger.error(f"Enrichment failed for id={row_id}: {e}")
+
+    try:
+        if args.workers <= 1:
+            for idx, row in enumerate(pending):
+                _enrich_one(idx, row)
+        else:
+            logger.info(f"Starting {args.workers} workers")
+            with ThreadPoolExecutor(max_workers=args.workers) as executor:
+                futures = {}
+                for idx, row in enumerate(pending):
+                    if idx < args.workers:
+                        time.sleep(idx * 2.0)
+                    futures[executor.submit(_enrich_one, idx, row)] = idx
+                for future in as_completed(futures):
+                    try:
+                        future.result()
+                    except Exception as e:
+                        logger.error(f"Worker error: {e}")
+
+        logger.info(f"Enrichment complete: {done_count} done, {failed_count} failed")
+    except KeyboardInterrupt:
+        logger.info(f"Interrupted — {done_count} done, {failed_count} failed so far. Re-run to resume.")
+    finally:
+        db.close()
+
+
+# ── Step 4: contact ────────────────────────────────────────────────
+
+def cmd_contact(args: argparse.Namespace) -> None:
+    """Visit business websites to extract emails, phones, and social media links."""
+    db = PlacesDB()
+
+    # Reset any in_progress contacts from a previous interrupted run
+    reset_count = db.reset_in_progress_contacts()
+    if reset_count:
+        logger.info(f"Reset {reset_count} interrupted in_progress contacts back to pending")
+
+    pending = db.fetch_pending_contacts(limit=args.limit)
+    if not pending:
+        logger.info("No pending contacts (or no rows with websites). Nothing to do.")
+        db.close()
+        return
+
+    logger.info(f"Found {len(pending)} places to extract contacts from")
+
+    done_count = 0
+    failed_count = 0
+    count_lock = threading.Lock()
+
+    def _contact_one(idx: int, row: dict) -> None:
+        nonlocal done_count, failed_count
+        row_id = row["id"]
+        website = row["website"]
+
+        if not db.claim_contact(row_id):
+            return
+
+        logger.info(f"Contact {idx+1}/{len(pending)}: id={row_id} url={website}")
+        try:
+            result = extract_website_contacts(website)
+            emails = ", ".join(result["emails"])
+            phones = ", ".join(result["phones"])
+            social = ", ".join(result["social_media"])
+            db.update_contact(row_id, emails=emails, phones=phones, social_media=social)
+            with count_lock:
+                done_count += 1
+            logger.info(
+                f"Contact id={row_id}: emails={emails!r}, phones={phones!r}, social={social!r}"
+            )
+        except Exception as e:
+            db.mark_contact_failed(row_id)
+            with count_lock:
+                failed_count += 1
+            logger.error(f"Contact failed for id={row_id}: {e}")
+
+    try:
+        if args.workers <= 1:
+            for idx, row in enumerate(pending):
+                _contact_one(idx, row)
+        else:
+            logger.info(f"Starting {args.workers} workers")
+            with ThreadPoolExecutor(max_workers=args.workers) as executor:
+                futures = {}
+                for idx, row in enumerate(pending):
+                    if idx < args.workers:
+                        time.sleep(idx * 2.0)
+                    futures[executor.submit(_contact_one, idx, row)] = idx
+                for future in as_completed(futures):
+                    try:
+                        future.result()
+                    except Exception as e:
+                        logger.error(f"Worker error: {e}")
+
+        logger.info(f"Contact extraction complete: {done_count} done, {failed_count} failed")
+    except KeyboardInterrupt:
+        logger.info(f"Interrupted — {done_count} done, {failed_count} failed so far. Re-run to resume.")
+    finally:
+        db.close()
+
+
 # ── main ────────────────────────────────────────────────────────────
 
 def main() -> None:
@@ -251,6 +410,10 @@ def main() -> None:
         cmd_sample(args)
     elif args.command == "extract":
         cmd_extract(args)
+    elif args.command == "enrich":
+        cmd_enrich(args)
+    elif args.command == "contact":
+        cmd_contact(args)
     else:
         parser.print_help()
 

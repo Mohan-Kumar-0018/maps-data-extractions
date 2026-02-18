@@ -2,7 +2,7 @@ VENV := venv
 PYTHON := $(VENV)/bin/python
 PIP := $(VENV)/bin/pip
 
-.PHONY: install run preview test clean setup-db reset-db
+.PHONY: install run preview test test-enrich test-contact clean setup-db reset-db
 
 install:
 	$(PIP) install -r requirements.txt
@@ -33,6 +33,45 @@ reset-db:
 	psql "$(DB_URL)" -f migrations/001_create_places_info.sql
 	psql "$(DB_URL)" -f migrations/003_create_categories.sql
 	psql "$(DB_URL)" -f migrations/004_normalize_sample_points.sql
+
+test-enrich: install
+	@$(PYTHON) -c "\
+import sys; \
+from scraper.db import PlacesDB; \
+from scraper.browser import extract_place_details; \
+row_id = int('$(ID)'); \
+db = PlacesDB(); \
+cur = db._conn.cursor(); \
+cur.execute('SELECT google_maps_url FROM places_info WHERE id = %s', (row_id,)); \
+row = cur.fetchone(); \
+assert row, f'No places_info row with id={row_id}'; \
+url = row[0]; \
+print(f'URL: {url}'); \
+details = extract_place_details(url); \
+print(f'total_reviews: {details[\"total_reviews\"]}'); \
+print(f'phone: {details[\"phone\"]}'); \
+print(f'website: {details[\"website\"]}'); \
+db.close()"
+
+test-contact: install
+	@$(PYTHON) -c "\
+import sys; \
+from scraper.db import PlacesDB; \
+from scraper.website import extract_website_contacts; \
+row_id = int('$(ID)'); \
+db = PlacesDB(); \
+cur = db._conn.cursor(); \
+cur.execute('SELECT website FROM places_info WHERE id = %s', (row_id,)); \
+row = cur.fetchone(); \
+assert row, f'No places_info row with id={row_id}'; \
+url = row[0]; \
+assert url, f'Row id={row_id} has no website'; \
+print(f'Website: {url}'); \
+result = extract_website_contacts(url); \
+print(f'Emails: {result[\"emails\"]}'); \
+print(f'Phones: {result[\"phones\"]}'); \
+print(f'Social: {result[\"social_media\"]}'); \
+db.close()"
 
 clean:
 	rm -rf output/*.csv

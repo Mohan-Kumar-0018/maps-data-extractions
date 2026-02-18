@@ -20,6 +20,95 @@ USER_AGENT = (
 )
 
 
+def extract_place_details(google_maps_url: str) -> dict:
+    """
+    Visit a Google Maps detail page and extract phone, website, and total reviews.
+
+    Launches its own browser instance so it's safe to call from multiple threads.
+    Returns dict with keys: total_reviews (int|None), phone (str), website (str).
+    """
+    result = {"total_reviews": None, "phone": "", "website": ""}
+
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(headless=True)
+        try:
+            context = browser.new_context(
+                viewport={"width": 1920, "height": 1080},
+                user_agent=USER_AGENT,
+            )
+            page = context.new_page()
+            page.goto(google_maps_url, timeout=PAGE_LOAD_TIMEOUT, wait_until="domcontentloaded")
+
+            # Wait for the detail panel to render
+            try:
+                page.wait_for_selector('[data-item-id^="phone:tel"], a[data-item-id="authority"], [data-item-id="address"]', timeout=10000)
+            except Exception:
+                logger.debug(f"Detail panel selectors not found for {google_maps_url}")
+
+            # Allow extra time for dynamic content
+            time.sleep(2)
+
+            # Total reviews — limited view may not show count
+            try:
+                # Try aria-label on stars span (e.g. "4.4 stars 1,234 reviews")
+                loc = page.locator('span.ceNzKf[aria-label]')
+                if loc.count() > 0:
+                    aria = loc.first.get_attribute("aria-label") or ""
+                    if "review" in aria.lower():
+                        parsed = _parse_review_count(aria.split("star")[1] if "star" in aria else aria)
+                        if parsed:
+                            result["total_reviews"] = parsed
+                # Fallback: button with review count text
+                if result["total_reviews"] is None:
+                    for sel in ['button[jsaction*="review"]', 'span[aria-label*="reviews"]']:
+                        loc = page.locator(sel)
+                        if loc.count() > 0:
+                            text = loc.first.inner_text().strip()
+                            if text:
+                                parsed = _parse_review_count(text)
+                                if parsed is not None:
+                                    result["total_reviews"] = parsed
+                                    break
+            except Exception:
+                pass
+
+            # Phone
+            try:
+                for sel in ['[data-item-id^="phone:tel"]', 'a[data-item-id^="phone:"]']:
+                    loc = page.locator(sel)
+                    if loc.count() > 0:
+                        # The aria-label often has "Phone: +966 54 910 0210"
+                        aria = loc.first.get_attribute("aria-label") or ""
+                        if aria:
+                            phone = re.sub(r"^[Pp]hone:\s*", "", aria).strip()
+                            if phone:
+                                result["phone"] = phone
+                                break
+                        # Fallback: inner text
+                        text = loc.first.inner_text().strip()
+                        if text:
+                            result["phone"] = text
+                            break
+            except Exception:
+                pass
+
+            # Website
+            try:
+                loc = page.locator('a[data-item-id="authority"]')
+                if loc.count() > 0:
+                    href = loc.first.get_attribute("href") or ""
+                    if href:
+                        result["website"] = href
+            except Exception:
+                pass
+
+            context.close()
+        finally:
+            browser.close()
+
+    return result
+
+
 def search_and_extract(
     lat: float,
     lng: float,
