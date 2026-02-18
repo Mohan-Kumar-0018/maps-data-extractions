@@ -287,10 +287,11 @@ def cmd_enrich(args: argparse.Namespace) -> None:
                 total_reviews=details["total_reviews"],
                 phone=details["phone"],
                 website=details["website"],
+                address=details["address"],
             )
             with count_lock:
                 done_count += 1
-            logger.info(f"Enriched id={row_id}: reviews={details['total_reviews']}, phone={details['phone']!r}, website={details['website']!r}")
+            logger.info(f"Enriched id={row_id}: reviews={details['total_reviews']}, phone={details['phone']!r}, website={details['website']!r}, address={details['address']!r}")
         except Exception as e:
             db.mark_enrichment_failed(row_id)
             with count_lock:

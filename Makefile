@@ -51,6 +51,7 @@ details = extract_place_details(url); \
 print(f'total_reviews: {details[\"total_reviews\"]}'); \
 print(f'phone: {details[\"phone\"]}'); \
 print(f'website: {details[\"website\"]}'); \
+print(f'address: {details[\"address\"]}'); \
 db.close()"
 
 test-contact: install

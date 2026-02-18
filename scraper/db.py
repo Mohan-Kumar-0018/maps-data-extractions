@@ -259,19 +259,20 @@ class PlacesDB:
             cur.execute(sql, (row_id,))
             return cur.rowcount == 1
 
-    def update_enrichment(self, row_id: int, total_reviews: int | None, phone: str, website: str) -> None:
+    def update_enrichment(self, row_id: int, total_reviews: int | None, phone: str, website: str, address: str = "") -> None:
         """Write enriched fields and mark done."""
         sql = """
             UPDATE places_info
             SET total_reviews = COALESCE(%s, total_reviews),
                 phone = CASE WHEN %s = '' THEN phone ELSE %s END,
                 website = CASE WHEN %s = '' THEN website ELSE %s END,
+                address = CASE WHEN %s = '' THEN address ELSE %s END,
                 info_status = 'done',
                 updated_at = NOW()
             WHERE id = %s
         """
         with self._conn.cursor() as cur:
-            cur.execute(sql, (total_reviews, phone, phone, website, website, row_id))
+            cur.execute(sql, (total_reviews, phone, phone, website, website, address, address, row_id))
 
     def mark_enrichment_failed(self, row_id: int) -> None:
         """Mark an enrichment as failed."""

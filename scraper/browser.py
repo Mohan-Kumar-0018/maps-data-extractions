@@ -27,7 +27,7 @@ def extract_place_details(google_maps_url: str) -> dict:
     Launches its own browser instance so it's safe to call from multiple threads.
     Returns dict with keys: total_reviews (int|None), phone (str), website (str).
     """
-    result = {"total_reviews": None, "phone": "", "website": ""}
+    result = {"total_reviews": None, "phone": "", "website": "", "address": ""}
 
     with sync_playwright() as pw:
         browser = pw.chromium.launch(headless=True)
@@ -99,6 +99,18 @@ def extract_place_details(google_maps_url: str) -> dict:
                     href = loc.first.get_attribute("href") or ""
                     if href:
                         result["website"] = href
+            except Exception:
+                pass
+
+            # Address
+            try:
+                loc = page.locator('[data-item-id="address"]')
+                if loc.count() > 0:
+                    aria = loc.first.get_attribute("aria-label") or ""
+                    if aria:
+                        address = re.sub(r"^[Aa]ddress:\s*", "", aria).strip()
+                        if address:
+                            result["address"] = address
             except Exception:
                 pass
 
