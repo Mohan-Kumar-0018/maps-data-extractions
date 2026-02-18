@@ -11,7 +11,7 @@ from scraper.kml_parser import parse_kml
 from scraper.sampler import generate_sample_points, calculate_area_km2
 from scraper.browser import search_and_extract
 from scraper.db import PlacesDB
-from scraper.dedup import Deduplicator
+from scraper.dedup import PolygonFilter
 from scraper.models import Business
 from scraper.progress import ProgressTracker
 from scraper.live_server import start_live_server
@@ -49,8 +49,8 @@ def main() -> None:
     sample_points, zoom = generate_sample_points(polygon_coords)
     logger.info(f"Will search {len(sample_points)} points at zoom {zoom}")
 
-    # 3. Set up deduplicator and progress tracker
-    dedup = Deduplicator(polygon_coords)
+    # 3. Set up polygon filter and progress tracker
+    poly_filter = PolygonFilter(polygon_coords)
     area_km2 = calculate_area_km2(polygon_coords)
     tracker = ProgressTracker(polygon_coords, sample_points, area_km2)
     server = start_live_server(tracker)
@@ -59,17 +59,17 @@ def main() -> None:
     write_lock = threading.Lock()
 
     def _on_extract(biz: Business, point_idx: int) -> None:
-        """Called per-business from browser thread. Dedup + insert to DB."""
+        """Called per-business from browser thread. Filter by polygon + insert to DB."""
         nonlocal total_written
-        kept = dedup.filter_businesses([biz])
-        if kept:
-            with write_lock:
-                total_written += 1
-                tracker.add_business(point_idx)
-            try:
-                db.insert_business(kept[0])
-            except Exception as e:
-                logger.warning(f"DB insert failed for {kept[0].place_id}: {e}")
+        if not poly_filter.is_inside(biz):
+            return
+        with write_lock:
+            total_written += 1
+            tracker.add_business(point_idx)
+        try:
+            db.insert_business(biz)
+        except Exception as e:
+            logger.warning(f"DB insert failed for {biz.place_id}: {e}")
 
     try:
         if args.workers <= 1:

@@ -17,12 +17,14 @@ preview: install
 test: install
 	$(PYTHON) test_single.py $(ARGS)
 
+DB_URL := $(shell $(PYTHON) -c "import yaml; c=yaml.safe_load(open('config.yml'))['database']; print(f\"postgresql://{c['user']}:{c['password']}@{c['host']}:{c['port']}/{c['name']}\")")
+
 setup-db:
-	psql "$(DATABASE_URL)" -f migrations/001_create_places_info.sql
+	psql "$(DB_URL)" -f migrations/001_create_places_info.sql
 
 reset-db:
-	psql "$(DATABASE_URL)" -c "DROP TABLE IF EXISTS places_info CASCADE;"
-	psql "$(DATABASE_URL)" -f migrations/001_create_places_info.sql
+	psql "$(DB_URL)" -c "DROP TABLE IF EXISTS places_info CASCADE;"
+	psql "$(DB_URL)" -f migrations/001_create_places_info.sql
 
 clean:
 	rm -rf output/*.csv
