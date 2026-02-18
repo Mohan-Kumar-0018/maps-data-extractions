@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3:*)",
+      "WebSearch",
+      "Bash(/Users/kumar/sideprojects/maps-data-extractions/venv/bin/python:*)",
+      "Bash(make run:*)",
+      "Bash(make test:*)",
+      "Bash(venv/bin/python:*)",
+      "Bash(source:*)",
+      "Bash(python test_single.py:*)"
+    ]
+  }
+}
