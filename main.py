@@ -32,6 +32,15 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+KML_FILE_PATH = "final_file_path.kml"
+
+
+def _load_kml():
+    """Parse the project KML file. Raises FileNotFoundError if missing."""
+    if not os.path.isfile(KML_FILE_PATH):
+        raise FileNotFoundError(f"KML file not found: {KML_FILE_PATH}")
+    return parse_kml(KML_FILE_PATH)
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -48,16 +57,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     # ── sample ──────────────────────────────────────────────────────
     sp = sub.add_parser("sample", help="Parse KML and store sample points in DB")
-    sp.add_argument("--kml", required=True, help="Path to KML file with polygon boundary")
     sp.add_argument("--category", default=None, help="Single category (default: all categories in DB)")
 
     # ── extract ─────────────────────────────────────────────────────
     ep = sub.add_parser("extract", help="Extract businesses from pending sample points (resumable)")
     ep.add_argument("--category", default=None, help="Single category (default: all categories)")
-    ep.add_argument("--kml", default=None, help="Optional KML file for polygon filtering and live map")
     ep.add_argument("--workers", type=int, default=4, help="Number of parallel browser workers (default: 4)")
     ep.add_argument("--max-results", type=int, default=10, help="Max results per search point (default: 10)")
-    ep.add_argument("--live", action="store_true", help="Start live progress dashboard (requires --kml)")
+    ep.add_argument("--live", action="store_true", help="Start live progress dashboard")
 
     # ── enrich ───────────────────────────────────────────────────────
     nr = sub.add_parser("enrich", help="Enrich places_info by visiting detail pages (resumable)")
@@ -71,7 +78,6 @@ def build_parser() -> argparse.ArgumentParser:
 
     # ── dashboard ────────────────────────────────────────────────────
     db = sub.add_parser("dashboard", help="Start interactive data summary dashboard")
-    db.add_argument("--kml", default=None, help="Optional KML file for polygon overlay on map")
     db.add_argument("--port", type=int, default=8090, help="Dashboard server port (default: 8090)")
 
     return parser
@@ -109,8 +115,7 @@ def cmd_list_categories(args: argparse.Namespace) -> None:
 
 def cmd_sample(args: argparse.Namespace) -> None:
     """Parse KML, generate sample points, and store them in the DB."""
-    logger.info(f"Parsing KML file: {args.kml}")
-    polygon_coords = parse_kml(args.kml)
+    polygon_coords = _load_kml()
     logger.info(f"Polygon has {len(polygon_coords)} vertices")
 
     sample_points, zoom = generate_sample_points(polygon_coords)
@@ -119,7 +124,7 @@ def cmd_sample(args: argparse.Namespace) -> None:
     db = PlacesDB()
     try:
         # Step 1: Insert geographic points (ON CONFLICT DO NOTHING)
-        point_ids = db.insert_sample_points(sample_points, zoom, args.kml)
+        point_ids = db.insert_sample_points(sample_points, zoom, KML_FILE_PATH)
         logger.info(f"Sample points in DB: {len(point_ids)} (new + existing)")
 
         # Step 2: Determine which categories to create mappings for
@@ -175,18 +180,16 @@ def cmd_extract(args: argparse.Namespace) -> None:
         f"across {len(categories_in_batch)} categories: {', '.join(categories_in_batch)}"
     )
 
-    # Optional polygon filter + live server
-    poly_filter = None
+    # Polygon filter (always active) + optional live server
+    polygon_coords = _load_kml()
+    poly_filter = PolygonFilter(polygon_coords)
     server = None
     tracker = None
-    if args.kml:
-        polygon_coords = parse_kml(args.kml)
-        poly_filter = PolygonFilter(polygon_coords)
-        if args.live:
-            area_km2 = calculate_area_km2(polygon_coords)
-            sample_coords = [(p["lat"], p["lng"]) for p in pending]
-            tracker = ProgressTracker(polygon_coords, sample_coords, area_km2)
-            server = start_live_server(tracker)
+    if args.live:
+        area_km2 = calculate_area_km2(polygon_coords)
+        sample_coords = [(p["lat"], p["lng"]) for p in pending]
+        tracker = ProgressTracker(polygon_coords, sample_coords, area_km2)
+        server = start_live_server(tracker)
 
     total_written = 0
     write_lock = threading.Lock()
@@ -436,9 +439,7 @@ def cmd_contact(args: argparse.Namespace) -> None:
 
 def cmd_dashboard(args: argparse.Namespace) -> None:
     """Start an interactive data summary dashboard."""
-    polygon_coords = None
-    if args.kml:
-        polygon_coords = parse_kml(args.kml)
+    polygon_coords = _load_kml()
     start_dashboard_server(port=args.port, polygon_coords=polygon_coords)
 
 
