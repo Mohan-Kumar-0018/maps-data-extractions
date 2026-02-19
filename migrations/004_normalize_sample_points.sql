@@ -27,6 +27,10 @@ CREATE TABLE category_sample_point_mappings (
     status          TEXT NOT NULL DEFAULT 'pending'
                     CHECK (status IN ('pending', 'in_progress', 'done', 'failed')),
     total_results   INTEGER NOT NULL DEFAULT 0,
+    new_count       INTEGER NOT NULL DEFAULT 0,
+    duplicate_count INTEGER NOT NULL DEFAULT 0,
+    filtered_count  INTEGER NOT NULL DEFAULT 0,
+    search_url      TEXT NOT NULL DEFAULT '',
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE (category_id, sample_point_id)

@@ -9,6 +9,7 @@ Three-step resumable pipeline:
 
 import argparse
 import logging
+import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -21,6 +22,7 @@ from scraper.dedup import PolygonFilter
 from scraper.models import Business
 from scraper.progress import ProgressTracker
 from scraper.live_server import start_live_server
+from scraper.dashboard_server import start_dashboard_server
 from scraper.website import extract_website_contacts
 
 logging.basicConfig(
@@ -66,6 +68,11 @@ def build_parser() -> argparse.ArgumentParser:
     ct = sub.add_parser("contact", help="Extract emails, phones, social links from business websites (resumable)")
     ct.add_argument("--workers", type=int, default=4, help="Number of parallel workers (default: 4)")
     ct.add_argument("--limit", type=int, default=None, help="Max number of places to process")
+
+    # ── dashboard ────────────────────────────────────────────────────
+    db = sub.add_parser("dashboard", help="Start interactive data summary dashboard")
+    db.add_argument("--kml", default=None, help="Optional KML file for polygon overlay on map")
+    db.add_argument("--port", type=int, default=8090, help="Dashboard server port (default: 8090)")
 
     return parser
 
@@ -183,17 +190,27 @@ def cmd_extract(args: argparse.Namespace) -> None:
 
     total_written = 0
     write_lock = threading.Lock()
+    # Per-mapping counters: {mapping_id: {"new": N, "dup": N, "filtered": N}}
+    mapping_counts: dict = {}
 
     def _on_extract(biz: Business, point_idx: int, mapping_id: int) -> None:
         nonlocal total_written
         if poly_filter and not poly_filter.is_inside(biz):
+            with write_lock:
+                mapping_counts[mapping_id]["filtered"] += 1
+            logger.debug(f"  Filtered out (outside polygon): {biz.name!r} ({biz.latitude}, {biz.longitude})")
             return
         with write_lock:
             total_written += 1
             if tracker:
                 tracker.add_business(point_idx)
         try:
-            db.insert_business(biz, mapping_id=mapping_id)
+            is_new = db.insert_business(biz, mapping_id=mapping_id)
+            with write_lock:
+                if is_new:
+                    mapping_counts[mapping_id]["new"] += 1
+                else:
+                    mapping_counts[mapping_id]["dup"] += 1
         except Exception as e:
             logger.warning(f"DB insert failed for {biz.place_id}: {e}")
 
@@ -205,17 +222,35 @@ def cmd_extract(args: argparse.Namespace) -> None:
         if not db.claim_mapping(mapping_id):
             return  # Already claimed by another process
 
+        with write_lock:
+            mapping_counts[mapping_id] = {"new": 0, "dup": 0, "filtered": 0}
+
         if tracker:
             tracker.mark_active(idx)
 
         logger.info(f"Mapping {idx+1}/{len(pending)}: ({lat:.6f}, {lng:.6f}) [{category}] [id={mapping_id}]")
         try:
             callback = lambda biz, _idx=idx, _mid=mapping_id: _on_extract(biz, _idx, _mid)
-            results = search_and_extract(lat, lng, category, zoom, args.max_results, on_extract=callback)
-            db.mark_mapping_done(mapping_id, total_results=len(results))
+            screenshot_dir = os.path.join("output", "screenshots")
+            os.makedirs(screenshot_dir, exist_ok=True)
+            screenshot_path = os.path.join(screenshot_dir, f"{mapping_id}.png")
+            results, used_url = search_and_extract(lat, lng, category, zoom, args.max_results, on_extract=callback, screenshot_path=screenshot_path)
+            mc = mapping_counts[mapping_id]
+            db.mark_mapping_done(
+                mapping_id,
+                total_results=len(results),
+                new_count=mc["new"],
+                duplicate_count=mc["dup"],
+                filtered_count=mc["filtered"],
+                search_url=used_url,
+            )
             if tracker:
                 tracker.mark_done(idx)
-            logger.info(f"Mapping {mapping_id} done ({len(results)} results) — running total: {total_written} businesses")
+            logger.info(
+                f"Mapping {mapping_id} done: {len(results)} raw → "
+                f"{mc['new']} new, {mc['dup']} duplicates, {mc['filtered']} filtered out "
+                f"— running total: {total_written}"
+            )
         except Exception as e:
             db.mark_mapping_failed(mapping_id)
             if tracker:
@@ -397,6 +432,16 @@ def cmd_contact(args: argparse.Namespace) -> None:
         db.close()
 
 
+# ── dashboard ──────────────────────────────────────────────────────
+
+def cmd_dashboard(args: argparse.Namespace) -> None:
+    """Start an interactive data summary dashboard."""
+    polygon_coords = None
+    if args.kml:
+        polygon_coords = parse_kml(args.kml)
+    start_dashboard_server(port=args.port, polygon_coords=polygon_coords)
+
+
 # ── main ────────────────────────────────────────────────────────────
 
 def main() -> None:
@@ -415,6 +460,8 @@ def main() -> None:
         cmd_enrich(args)
     elif args.command == "contact":
         cmd_contact(args)
+    elif args.command == "dashboard":
+        cmd_dashboard(args)
     else:
         parser.print_help()
 

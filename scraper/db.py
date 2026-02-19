@@ -22,7 +22,8 @@ INSERT INTO places_info
 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
 ON CONFLICT (place_id) DO UPDATE SET
     duplicate_count = places_info.duplicate_count + 1,
-    updated_at = NOW();
+    updated_at = NOW()
+RETURNING (xmax = 0) AS is_new;
 """
 
 
@@ -72,9 +73,10 @@ class PlacesDB:
         self._conn.autocommit = True
         logger.info("Connected to PostgreSQL")
 
-    def insert_business(self, biz: Business, mapping_id: int | None = None) -> None:
+    def insert_business(self, biz: Business, mapping_id: int | None = None) -> bool:
+        """Insert or update a business. Returns True if new, False if duplicate."""
         if not biz.place_id:
-            return
+            return False
         with self._conn.cursor() as cur:
             cur.execute(_UPSERT_SQL, (
                 biz.name,
@@ -91,6 +93,8 @@ class PlacesDB:
                 biz.category,
                 mapping_id,
             ))
+            row = cur.fetchone()
+            return bool(row and row[0])
 
     # ── sample_points table ──────────────────────────────────────────
 
@@ -194,14 +198,24 @@ class PlacesDB:
             cur.execute(sql, (mapping_id,))
             return cur.rowcount == 1
 
-    def mark_mapping_done(self, mapping_id: int, total_results: int = 0) -> None:
+    def mark_mapping_done(
+        self,
+        mapping_id: int,
+        total_results: int = 0,
+        new_count: int = 0,
+        duplicate_count: int = 0,
+        filtered_count: int = 0,
+        search_url: str = "",
+    ) -> None:
         sql = """
             UPDATE category_sample_point_mappings
-            SET status = 'done', total_results = %s, updated_at = NOW()
+            SET status = 'done', total_results = %s,
+                new_count = %s, duplicate_count = %s, filtered_count = %s,
+                search_url = %s, updated_at = NOW()
             WHERE id = %s
         """
         with self._conn.cursor() as cur:
-            cur.execute(sql, (total_results, mapping_id))
+            cur.execute(sql, (total_results, new_count, duplicate_count, filtered_count, search_url, mapping_id))
 
     def mark_mapping_failed(self, mapping_id: int) -> None:
         sql = """
@@ -384,6 +398,203 @@ class PlacesDB:
             cur.execute(sql)
             return [
                 {"id": row[0], "name": row[1], "created_at": row[2]}
+                for row in cur.fetchall()
+            ]
+
+    # ── dashboard queries (read-only) ──────────────────────────────
+
+    def dashboard_overall_stats(self) -> dict:
+        """Top-level counts for the dashboard."""
+        sql = """
+            SELECT
+                (SELECT COUNT(*) FROM sample_points) AS total_sample_points,
+                (SELECT COUNT(*) FROM categories) AS total_categories,
+                (SELECT COUNT(*) FROM category_sample_point_mappings WHERE status = 'done') AS mappings_done,
+                (SELECT COUNT(*) FROM category_sample_point_mappings WHERE status = 'pending') AS mappings_pending,
+                (SELECT COUNT(*) FROM category_sample_point_mappings WHERE status = 'failed') AS mappings_failed,
+                (SELECT COUNT(*) FROM places_info) AS total_businesses,
+                (SELECT COALESCE(SUM(duplicate_count), 0) FROM places_info) AS total_duplicate_hits,
+                (SELECT COUNT(*) FROM places_info WHERE info_status = 'done') AS enriched_done,
+                (SELECT COUNT(*) FROM places_info WHERE info_status = 'failed') AS enriched_failed,
+                (SELECT COUNT(*) FROM places_info WHERE contact_status = 'done') AS contacts_done,
+                (SELECT COUNT(*) FROM places_info WHERE contact_status = 'failed') AS contacts_failed,
+                (SELECT COUNT(*) FROM places_info WHERE website != '') AS businesses_with_websites,
+                (SELECT COUNT(*) FROM places_info WHERE contact_status = 'done'
+                    AND (website_email != '' OR website_phone != '' OR social_media != '')) AS contacts_with_data
+        """
+        with self._conn.cursor() as cur:
+            cur.execute(sql)
+            row = cur.fetchone()
+            return {
+                "total_sample_points": row[0],
+                "total_categories": row[1],
+                "mappings_done": row[2],
+                "mappings_pending": row[3],
+                "mappings_failed": row[4],
+                "total_businesses": row[5],
+                "total_duplicate_hits": row[6],
+                "enriched_done": row[7],
+                "enriched_failed": row[8],
+                "contacts_done": row[9],
+                "contacts_failed": row[10],
+                "businesses_with_websites": row[11],
+                "contacts_with_data": row[12],
+            }
+
+    def dashboard_category_breakdown(self) -> List[dict]:
+        """Per-category stats for the dashboard."""
+        sql = """
+            SELECT
+                c.name AS category,
+                COUNT(DISTINCT m.id) FILTER (WHERE m.status = 'done') AS mappings_done,
+                COUNT(DISTINCT m.id) FILTER (WHERE m.status = 'failed') AS mappings_failed,
+                COALESCE(SUM(m.total_results), 0) AS total_raw_results,
+                COUNT(DISTINCT p.id) AS unique_businesses,
+                COUNT(DISTINCT p.id) FILTER (WHERE p.info_status = 'done') AS enriched_count,
+                COUNT(DISTINCT p.id) FILTER (WHERE p.contact_status = 'done') AS contacts_done
+            FROM categories c
+            LEFT JOIN category_sample_point_mappings m ON m.category_id = c.id
+            LEFT JOIN places_info p ON p.mapping_id = m.id
+            GROUP BY c.id, c.name
+            ORDER BY c.name
+        """
+        with self._conn.cursor() as cur:
+            cur.execute(sql)
+            return [
+                {
+                    "category": row[0],
+                    "mappings_done": row[1],
+                    "mappings_failed": row[2],
+                    "total_raw_results": row[3],
+                    "unique_businesses": row[4],
+                    "enriched_count": row[5],
+                    "contacts_done": row[6],
+                }
+                for row in cur.fetchall()
+            ]
+
+    def dashboard_sample_point_stats(self) -> List[dict]:
+        """Per-point data for map visualization."""
+        sql = """
+            SELECT
+                sp.id,
+                sp.lat,
+                sp.lng,
+                COUNT(DISTINCT m.id) AS total_mappings,
+                COUNT(DISTINCT m.id) FILTER (WHERE m.status = 'done') AS mappings_done,
+                COALESCE(SUM(m.total_results), 0) AS total_raw_results,
+                COUNT(DISTINCT p.id) AS unique_businesses,
+                COALESCE(SUM(p.duplicate_count), 0) AS duplicate_hits
+            FROM sample_points sp
+            LEFT JOIN category_sample_point_mappings m ON m.sample_point_id = sp.id
+            LEFT JOIN places_info p ON p.mapping_id = m.id
+            GROUP BY sp.id, sp.lat, sp.lng
+            ORDER BY sp.id
+        """
+        with self._conn.cursor() as cur:
+            cur.execute(sql)
+            return [
+                {
+                    "id": row[0],
+                    "lat": float(row[1]),
+                    "lng": float(row[2]),
+                    "total_mappings": row[3],
+                    "mappings_done": row[4],
+                    "total_raw_results": row[5],
+                    "unique_businesses": row[6],
+                    "duplicate_hits": row[7],
+                }
+                for row in cur.fetchall()
+            ]
+
+    def dashboard_zero_result_points(self) -> List[dict]:
+        """Points where all mappings are done but zero results."""
+        sql = """
+            SELECT
+                sp.id,
+                sp.lat,
+                sp.lng,
+                COUNT(m.id) AS total_mappings
+            FROM sample_points sp
+            JOIN category_sample_point_mappings m ON m.sample_point_id = sp.id
+            WHERE m.status = 'done'
+            GROUP BY sp.id, sp.lat, sp.lng
+            HAVING SUM(m.total_results) = 0
+            ORDER BY sp.id
+        """
+        with self._conn.cursor() as cur:
+            cur.execute(sql)
+            return [
+                {
+                    "id": row[0],
+                    "lat": float(row[1]),
+                    "lng": float(row[2]),
+                    "total_mappings": row[3],
+                }
+                for row in cur.fetchall()
+            ]
+
+    def dashboard_duplicate_hotspots(self, limit: int = 50) -> List[dict]:
+        """Top businesses by duplicate_count."""
+        sql = """
+            SELECT name, category, latitude, longitude, duplicate_count
+            FROM places_info
+            WHERE duplicate_count > 0
+            ORDER BY duplicate_count DESC
+            LIMIT %s
+        """
+        with self._conn.cursor() as cur:
+            cur.execute(sql, (limit,))
+            return [
+                {
+                    "name": row[0],
+                    "category": row[1],
+                    "lat": float(row[2]) if row[2] else None,
+                    "lng": float(row[3]) if row[3] else None,
+                    "duplicate_count": row[4],
+                }
+                for row in cur.fetchall()
+            ]
+
+    def dashboard_point_category_breakdown(self) -> dict:
+        """Per-point per-category stats. Returns {point_id: {category: {total_results, unique_businesses}}}."""
+        sql = """
+            SELECT
+                m.sample_point_id,
+                c.name AS category,
+                m.total_results,
+                COUNT(p.id) AS unique_businesses
+            FROM category_sample_point_mappings m
+            JOIN categories c ON c.id = m.category_id
+            LEFT JOIN places_info p ON p.mapping_id = m.id
+            GROUP BY m.sample_point_id, c.name, m.total_results
+            ORDER BY m.sample_point_id, c.name
+        """
+        with self._conn.cursor() as cur:
+            cur.execute(sql)
+            result: dict = {}
+            for row in cur.fetchall():
+                point_id = row[0]
+                if point_id not in result:
+                    result[point_id] = {}
+                result[point_id][row[1]] = {
+                    "total_results": row[2],
+                    "unique_businesses": row[3],
+                }
+            return result
+
+    def dashboard_duplicate_distribution(self) -> List[dict]:
+        """Histogram of duplicate counts."""
+        sql = """
+            SELECT duplicate_count, COUNT(*) AS business_count
+            FROM places_info
+            GROUP BY duplicate_count
+            ORDER BY duplicate_count
+        """
+        with self._conn.cursor() as cur:
+            cur.execute(sql)
+            return [
+                {"duplicate_count": row[0], "business_count": row[1]}
                 for row in cur.fetchall()
             ]
 

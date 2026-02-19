@@ -38,7 +38,7 @@ def main() -> None:
             logger.warning(f"DB insert failed for {biz.place_id}: {e}")
 
     try:
-        search_and_extract(args.lat, args.lng, args.category, 16, args.max_results, on_extract=_on_extract)
+        search_and_extract(args.lat, args.lng, args.category, 16, args.max_results, on_extract=_on_extract)[0]
     except KeyboardInterrupt:
         logger.info(f"Interrupted — inserted {count} businesses")
     finally:

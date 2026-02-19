@@ -2,7 +2,7 @@ VENV := venv
 PYTHON := $(VENV)/bin/python
 PIP := $(VENV)/bin/pip
 
-.PHONY: install run preview test test-enrich test-contact clean setup-db reset-db
+.PHONY: install run preview test test-extract test-enrich test-contact clean setup-db reset-db dashboard
 
 install:
 	$(PIP) install -r requirements.txt
@@ -33,6 +33,29 @@ reset-db:
 	psql "$(DB_URL)" -f migrations/001_create_places_info.sql
 	psql "$(DB_URL)" -f migrations/003_create_categories.sql
 	psql "$(DB_URL)" -f migrations/004_normalize_sample_points.sql
+
+test-extract: install
+	@$(PYTHON) -c "\
+import sys, os; \
+from scraper.db import PlacesDB; \
+from scraper.browser import search_and_extract; \
+mapping_id = int('$(ID)'); \
+db = PlacesDB(); \
+cur = db._conn.cursor(); \
+cur.execute('SELECT m.id, sp.lat, sp.lng, sp.zoom, c.name FROM category_sample_point_mappings m JOIN sample_points sp ON sp.id = m.sample_point_id JOIN categories c ON c.id = m.category_id WHERE m.id = %s', (mapping_id,)); \
+row = cur.fetchone(); \
+assert row, f'No mapping with id={mapping_id}'; \
+mid, lat, lng, zoom, category = row; \
+print(f'Mapping {mid}: ({lat}, {lng}) zoom={zoom} [{category}]'); \
+print(f'Searching...'); \
+ss_dir = os.path.join('output', 'screenshots'); \
+os.makedirs(ss_dir, exist_ok=True); \
+ss_path = os.path.join(ss_dir, f'{mapping_id}.png'); \
+results, url = search_and_extract(lat, lng, category, zoom, max_results=10, on_extract=lambda biz: print(f'  {biz.name} | {biz.place_id} | ({biz.latitude}, {biz.longitude})'), screenshot_path=ss_path); \
+print(f'\nTotal results: {len(results)}'); \
+print(f'Search URL: {url}'); \
+print(f'Screenshot: {ss_path}'); \
+db.close()"
 
 test-enrich: install
 	@$(PYTHON) -c "\
@@ -73,6 +96,9 @@ print(f'Emails: {result[\"emails\"]}'); \
 print(f'Phones: {result[\"phones\"]}'); \
 print(f'Social: {result[\"social_media\"]}'); \
 db.close()"
+
+dashboard: install
+	$(PYTHON) main.py dashboard $(ARGS)
 
 clean:
 	rm -rf output/*.csv

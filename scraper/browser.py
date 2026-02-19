@@ -128,6 +128,7 @@ def search_and_extract(
     zoom: int,
     max_results: int = 50,
     on_extract: Optional[callable] = None,
+    screenshot_path: Optional[str] = None,
 ) -> List[Business]:
     """
     Launch a browser, search Google Maps at the given coordinates, and
@@ -163,17 +164,25 @@ def search_and_extract(
             except Exception:
                 logger.warning("Could not find results on page")
                 context.close()
-                return []
+                return [], search_url
 
             # Scroll to load more results
             _scroll_results_panel(page, max_results)
+
+            # Screenshot after results loaded
+            if screenshot_path:
+                try:
+                    page.screenshot(path=screenshot_path, full_page=True)
+                    logger.debug(f"Screenshot saved: {screenshot_path}")
+                except Exception as e:
+                    logger.warning(f"Screenshot failed: {e}")
 
             # Extract directly from search result cards (no page visits)
             businesses = _extract_from_cards(page, category, max_results)
             if not businesses:
                 logger.warning("No businesses extracted from cards")
                 context.close()
-                return []
+                return [], search_url
 
             for idx, biz in enumerate(businesses):
                 if on_extract:
@@ -185,7 +194,7 @@ def search_and_extract(
             browser.close()
 
     logger.info(f"Extracted {len(businesses)} businesses from this search point")
-    return businesses
+    return businesses, search_url
 
 
 # ---------------------------------------------------------------------------
