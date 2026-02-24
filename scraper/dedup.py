@@ -21,3 +21,7 @@ class PolygonFilter:
         if biz.latitude is None or biz.longitude is None:
             return False
         return self._polygon.contains(Point(biz.longitude, biz.latitude))
+
+    def is_inside_coords(self, lat: float, lng: float) -> bool:
+        """Return True if the raw (lat, lng) coordinate is inside the polygon."""
+        return self._polygon.contains(Point(lng, lat))

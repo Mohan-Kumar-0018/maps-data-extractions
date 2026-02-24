@@ -15,7 +15,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from scraper.kml_parser import parse_kml
-from scraper.sampler import generate_sample_points, calculate_area_km2
+from scraper.sampler import generate_sample_points, generate_sub_points, calculate_area_km2
 from scraper.browser import search_and_extract, extract_place_details
 from scraper.db import PlacesDB
 from scraper.dedup import PolygonFilter
@@ -63,8 +63,12 @@ def build_parser() -> argparse.ArgumentParser:
     ep = sub.add_parser("extract", help="Extract businesses from pending sample points (resumable)")
     ep.add_argument("--category", default=None, help="Single category (default: all categories)")
     ep.add_argument("--workers", type=int, default=4, help="Number of parallel browser workers (default: 4)")
-    ep.add_argument("--max-results", type=int, default=10, help="Max results per search point (default: 10)")
+    ep.add_argument("--max-results", type=int, default=20, help="Max results per search point (default: 20)")
     ep.add_argument("--live", action="store_true", help="Start live progress dashboard")
+    ep.add_argument("--subdivide-threshold", type=int, default=None,
+                    help="Subdivide when new_count >= N (default: max_results - 2)")
+    ep.add_argument("--max-zoom", type=int, default=18, help="Stop subdividing past this zoom (default: 18)")
+    ep.add_argument("--no-subdivide", action="store_true", help="Disable adaptive subdivision")
 
     # ── enrich ───────────────────────────────────────────────────────
     nr = sub.add_parser("enrich", help="Enrich places_info by visiting detail pages (resumable)")
@@ -191,6 +195,12 @@ def cmd_extract(args: argparse.Namespace) -> None:
         tracker = ProgressTracker(polygon_coords, sample_coords, area_km2)
         server = start_live_server(tracker)
 
+    # Subdivision config
+    subdivide_enabled = not args.no_subdivide
+    subdivide_threshold = args.subdivide_threshold if args.subdivide_threshold is not None else (args.max_results - 2)
+    max_zoom = args.max_zoom
+    total_subdivisions = 0
+
     total_written = 0
     write_lock = threading.Lock()
     # Per-mapping counters: {mapping_id: {"new": N, "dup": N, "filtered": N}}
@@ -218,6 +228,7 @@ def cmd_extract(args: argparse.Namespace) -> None:
             logger.warning(f"DB insert failed for {biz.place_id}: {e}")
 
     def _process_mapping(idx: int, mapping: dict) -> None:
+        nonlocal total_subdivisions
         mapping_id = mapping["mapping_id"]
         lat, lng, zoom = mapping["lat"], mapping["lng"], mapping["zoom"]
         category = mapping["category"]
@@ -254,6 +265,22 @@ def cmd_extract(args: argparse.Namespace) -> None:
                 f"{mc['new']} new, {mc['dup']} duplicates, {mc['filtered']} filtered out "
                 f"— running total: {total_written}"
             )
+
+            # Adaptive subdivision: create sub-points for high-yield mappings
+            if subdivide_enabled and mc["new"] >= subdivide_threshold and zoom < max_zoom:
+                sub_pts, new_zoom = generate_sub_points(lat, lng, zoom, max_zoom)
+                if sub_pts:
+                    sub_pts_inside = [p for p in sub_pts if poly_filter.is_inside_coords(*p)]
+                    if sub_pts_inside:
+                        cat_id = db.get_or_create_category(category)
+                        new_mappings = db.insert_subdivision_points(sub_pts_inside, new_zoom, KML_FILE_PATH, cat_id)
+                        if new_mappings:
+                            with write_lock:
+                                total_subdivisions += new_mappings
+                            logger.info(
+                                f"Subdivided mapping {mapping_id}: {new_mappings} new pending "
+                                f"mappings at zoom {new_zoom} ({len(sub_pts_inside)} sub-points)"
+                            )
         except Exception as e:
             db.mark_mapping_failed(mapping_id)
             if tracker:
@@ -277,7 +304,10 @@ def cmd_extract(args: argparse.Namespace) -> None:
                     except Exception as e:
                         logger.error(f"Worker error: {e}")
 
-        logger.info(f"Extraction complete: {total_written} businesses inserted")
+        summary = f"Extraction complete: {total_written} businesses inserted"
+        if total_subdivisions:
+            summary += f", {total_subdivisions} new subdivision mappings queued (re-run to process)"
+        logger.info(summary)
     except KeyboardInterrupt:
         logger.info(f"Interrupted — {total_written} businesses inserted so far. Re-run to resume.")
     finally:

@@ -1,8 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <kml xmlns="http://www.opengis.net/kml/2.2">
   <Document>
-    <name>Riyadh Map</name>
-    <description/>
+    <name>Untitled layer</name>
     <Style id="poly-000000-1200-77-nodesc-normal">
       <LineStyle>
         <color>ff000000</color>
@@ -41,26 +40,25 @@
         <styleUrl>#poly-000000-1200-77-nodesc-highlight</styleUrl>
       </Pair>
     </StyleMap>
-    <Folder>
-      <name>Untitled layer</name>
-      <Placemark>
-        <name>riyadh city</name>
-        <styleUrl>#poly-000000-1200-77-nodesc</styleUrl>
-        <Polygon>
-          <outerBoundaryIs>
-            <LinearRing>
-              <tessellate>1</tessellate>
-              <coordinates>
-                46.5375709,24.8636793,0
-                46.4968641,24.4899209,0
-                47.075901,24.5942508,0
-                46.7964363,24.9664316,0
-                46.5375709,24.8636793,0
-              </coordinates>
-            </LinearRing>
-          </outerBoundaryIs>
-        </Polygon>
-      </Placemark>
-    </Folder>
+    <Placemark>
+      <name>riyadh-final</name>
+      <styleUrl>#poly-000000-1200-77-nodesc</styleUrl>
+      <Polygon>
+        <outerBoundaryIs>
+          <LinearRing>
+            <tessellate>1</tessellate>
+            <coordinates>
+              46.5283358,24.7864353,0
+              46.4720309,24.5355802,0
+              46.9691622,24.498096,0
+              46.9046176,24.914787,0
+              46.6684115,25.0106521,0
+              46.5475619,24.8873832,0
+              46.5283358,24.7864353,0
+            </coordinates>
+          </LinearRing>
+        </outerBoundaryIs>
+      </Polygon>
+    </Placemark>
   </Document>
 </kml>

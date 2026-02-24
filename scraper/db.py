@@ -128,6 +128,20 @@ class PlacesDB:
                     ids.append(row[0])
         return ids
 
+    def insert_subdivision_points(
+        self,
+        sub_points: List[Tuple[float, float]],
+        zoom: int,
+        kml_file: str,
+        category_id: int,
+    ) -> int:
+        """Insert sub-points and create mappings for a single category.
+
+        Returns number of new mappings created.
+        """
+        point_ids = self.insert_sample_points(sub_points, zoom, kml_file)
+        return self.create_mappings(category_id, point_ids)
+
     # ── category_sample_point_mappings table ─────────────────────────
 
     def create_mappings(self, category_id: int, sample_point_ids: List[int]) -> int:

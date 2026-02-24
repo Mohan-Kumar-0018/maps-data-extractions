@@ -157,12 +157,53 @@ def search_and_extract(
             # Navigate to search URL
             page.goto(search_url, timeout=PAGE_LOAD_TIMEOUT, wait_until="domcontentloaded")
 
-            # Wait for results
+            # Wait for results — race: links appear vs "no results" text vs timeout
             try:
-                page.wait_for_selector('a[href*="/maps/place/"]', timeout=15000)
-                logger.info("Results loaded")
+                outcome = page.evaluate("""() => new Promise((resolve) => {
+                    const TIMEOUT = 8000;
+                    const NO_RESULT_PHRASES = ["can't find", "no results", "didn't match", "0 results"];
+
+                    // Check if results already present
+                    if (document.querySelector('a[href*="/maps/place/"]')) {
+                        resolve("found");
+                        return;
+                    }
+
+                    let settled = false;
+                    const finish = (result) => {
+                        if (settled) return;
+                        settled = true;
+                        if (observer) observer.disconnect();
+                        clearTimeout(timer);
+                        resolve(result);
+                    };
+
+                    const observer = new MutationObserver(() => {
+                        if (document.querySelector('a[href*="/maps/place/"]')) {
+                            finish("found");
+                            return;
+                        }
+                        const bodyText = document.body.innerText.toLowerCase();
+                        for (const phrase of NO_RESULT_PHRASES) {
+                            if (bodyText.includes(phrase)) {
+                                finish("empty");
+                                return;
+                            }
+                        }
+                    });
+                    observer.observe(document.body, {childList: true, subtree: true, characterData: true});
+
+                    const timer = setTimeout(() => finish("timeout"), TIMEOUT);
+                })""")
+
+                if outcome == "found":
+                    logger.info("Results loaded")
+                else:
+                    logger.info(f"No results detected ({outcome})")
+                    context.close()
+                    return [], search_url
             except Exception:
-                logger.warning("Could not find results on page")
+                logger.warning("Could not detect results on page")
                 context.close()
                 return [], search_url
 
@@ -350,7 +391,7 @@ def _scroll_results_panel(page: Page, max_results: int) -> None:
         logger.info(f"Already have {current} listings, skipping scroll")
         return
 
-    for _ in range(10):
+    for _ in range(15):
         scrollable.evaluate("el => el.scrollTop = el.scrollHeight")
         time.sleep(2)
         current = len(page.locator('a[href*="/maps/place/"]').all())

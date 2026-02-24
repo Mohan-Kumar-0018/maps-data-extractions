@@ -87,3 +87,30 @@ def generate_sample_points(
 
     logger.info(f"Generated {len(sample_points)} search points within polygon")
     return sample_points, zoom_level
+
+
+def generate_sub_points(
+    lat: float,
+    lng: float,
+    current_zoom: int,
+    max_zoom: int = 18,
+) -> Tuple[List[Tuple[float, float]], int] | Tuple[None, None]:
+    """
+    Generate a 2x2 grid of sub-points around (lat, lng) at zoom + 1.
+
+    Returns (sub_points, new_zoom) or (None, None) if already at max zoom.
+    """
+    if current_zoom >= max_zoom:
+        return None, None
+
+    new_zoom = current_zoom + 1
+    offset = 360 / (2 ** new_zoom) * 1.25
+
+    sub_points = [
+        (lat + offset, lng + offset),
+        (lat + offset, lng - offset),
+        (lat - offset, lng + offset),
+        (lat - offset, lng - offset),
+    ]
+
+    return sub_points, new_zoom
