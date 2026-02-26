@@ -12,7 +12,7 @@ class ProgressTracker:
     def __init__(
         self,
         polygon_coords: List[Tuple[float, float]],
-        sample_points: List[Tuple[float, float]],
+        grid_points: List[Tuple[float, float]],
         area_km2: float,
     ):
         self._lock = threading.Lock()
@@ -21,7 +21,7 @@ class ProgressTracker:
         self.area_km2 = area_km2
         self.points = [
             {"lat": lat, "lng": lng, "status": "pending", "businesses": 0}
-            for lat, lng in sample_points
+            for lat, lng in grid_points
         ]
         self.total_businesses = 0
 

@@ -5,7 +5,7 @@ import logging
 import webbrowser
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
-from scraper.db import PlacesDB
+from scraper.db import ListingsDB
 
 logger = logging.getLogger(__name__)
 
@@ -438,7 +438,7 @@ class _Handler(BaseHTTPRequestHandler):
 
 def start_dashboard_server(port: int = 8090, polygon_coords=None) -> None:
     """Fetch all dashboard data, then serve the dashboard in the foreground (blocking)."""
-    db = PlacesDB()
+    db = ListingsDB()
     try:
         data = {
             "overall": db.dashboard_overall_stats(),

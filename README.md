@@ -47,7 +47,7 @@ make run ARGS="list-categories"
 Generate search points within the KML polygon boundary. Points are stored in the DB and reused across categories:
 
 ```bash
-# Generate sample points for all categories
+# Generate grid points for all categories
 make run ARGS="sample"
 
 # Or for a single category
@@ -56,7 +56,7 @@ make run ARGS='sample --category "Restaurants & Cafes"'
 
 ### 3. Extract
 
-Search Google Maps at each sample point and extract business listings. Results are filtered by the polygon boundary and deduplicated by `place_id`:
+Search Google Maps at each grid point and extract business listings. Results are filtered by the polygon boundary and deduplicated by `place_id`:
 
 ```bash
 # Extract all categories (4 parallel browsers, max 10 results per point)
@@ -69,9 +69,9 @@ make run ARGS='extract --category "Restaurants & Cafes" --workers 4'
 make run ARGS="extract --workers 4 --live"
 ```
 
-Each mapping logs a breakdown: `20 raw → 3 new, 12 duplicates, 5 filtered out`
+Each task logs a breakdown: `20 raw → 3 new, 12 duplicates, 5 filtered out`
 
-Screenshots are saved to `output/screenshots/{mapping_id}.png`.
+Screenshots are saved to `output/screenshots/{search_task_id}.png`.
 
 ### 4. Enrich
 
@@ -104,23 +104,23 @@ make dashboard
 ```
 
 Opens a browser at http://localhost:8090 with:
-- Stat cards (sample points, businesses, enriched, contacts)
+- Stat cards (grid points, businesses, enriched, contacts)
 - Pipeline funnel chart
 - Category breakdown table
-- Interactive map with color-coded sample points (filterable by category)
+- Interactive map with color-coded grid points (filterable by category)
 - Duplicate analysis
 - Zero-result points
 
 ## Testing Individual Records
 
 ```bash
-# Test extraction for a specific mapping ID
+# Test extraction for a specific search task ID
 make test-extract ID=291
 
-# Test enrichment for a specific places_info row
+# Test enrichment for a specific listings row
 make test-enrich ID=42
 
-# Test contact extraction for a specific places_info row
+# Test contact extraction for a specific listings row
 make test-contact ID=42
 ```
 

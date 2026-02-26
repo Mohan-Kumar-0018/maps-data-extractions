@@ -1,4 +1,4 @@
-CREATE TABLE IF NOT EXISTS sample_points (
+CREATE TABLE IF NOT EXISTS grid_points (
     id          BIGSERIAL PRIMARY KEY,
     lat         DOUBLE PRECISION NOT NULL,
     lng         DOUBLE PRECISION NOT NULL,
@@ -10,5 +10,5 @@ CREATE TABLE IF NOT EXISTS sample_points (
     created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
-CREATE INDEX IF NOT EXISTS idx_sample_points_status ON sample_points (status);
-CREATE INDEX IF NOT EXISTS idx_sample_points_category ON sample_points (category);
+CREATE INDEX IF NOT EXISTS idx_grid_points_status ON grid_points (status);
+CREATE INDEX IF NOT EXISTS idx_grid_points_category ON grid_points (category);

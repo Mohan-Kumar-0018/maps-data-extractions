@@ -5,7 +5,7 @@ import argparse
 import logging
 
 from scraper.browser import search_and_extract
-from scraper.db import PlacesDB
+from scraper.db import ListingsDB
 
 logging.basicConfig(
     level=logging.INFO,
@@ -23,7 +23,7 @@ def main() -> None:
     parser.add_argument("--max-results", type=int, default=10, help="Max results (default: 10)")
     args = parser.parse_args()
 
-    db = PlacesDB()
+    db = ListingsDB()
 
     logger.info(f"Searching '{args.category}' at ({args.lat}, {args.lng}) zoom 16")
 

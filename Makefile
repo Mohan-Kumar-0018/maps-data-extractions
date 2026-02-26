@@ -26,9 +26,9 @@ setup-db:
 	psql "$(DB_URL)" -f migrations/004_normalize_sample_points.sql
 
 reset-db:
-	psql "$(DB_URL)" -c "DROP TABLE IF EXISTS category_sample_point_mappings CASCADE;"
-	psql "$(DB_URL)" -c "DROP TABLE IF EXISTS sample_points CASCADE;"
-	psql "$(DB_URL)" -c "DROP TABLE IF EXISTS places_info CASCADE;"
+	psql "$(DB_URL)" -c "DROP TABLE IF EXISTS search_tasks CASCADE;"
+	psql "$(DB_URL)" -c "DROP TABLE IF EXISTS grid_points CASCADE;"
+	psql "$(DB_URL)" -c "DROP TABLE IF EXISTS listings CASCADE;"
 	psql "$(DB_URL)" -c "DROP TABLE IF EXISTS categories CASCADE;"
 	psql "$(DB_URL)" -f migrations/001_create_places_info.sql
 	psql "$(DB_URL)" -f migrations/003_create_categories.sql
@@ -37,20 +37,20 @@ reset-db:
 test-extract: install
 	@$(PYTHON) -c "\
 import sys, os; \
-from scraper.db import PlacesDB; \
+from scraper.db import ListingsDB; \
 from scraper.browser import search_and_extract; \
-mapping_id = int('$(ID)'); \
-db = PlacesDB(); \
+search_task_id = int('$(ID)'); \
+db = ListingsDB(); \
 cur = db._conn.cursor(); \
-cur.execute('SELECT m.id, sp.lat, sp.lng, sp.zoom, c.name FROM category_sample_point_mappings m JOIN sample_points sp ON sp.id = m.sample_point_id JOIN categories c ON c.id = m.category_id WHERE m.id = %s', (mapping_id,)); \
+cur.execute('SELECT t.id, gp.lat, gp.lng, gp.zoom, c.name FROM search_tasks t JOIN grid_points gp ON gp.id = t.grid_point_id JOIN categories c ON c.id = t.category_id WHERE t.id = %s', (search_task_id,)); \
 row = cur.fetchone(); \
-assert row, f'No mapping with id={mapping_id}'; \
-mid, lat, lng, zoom, category = row; \
-print(f'Mapping {mid}: ({lat}, {lng}) zoom={zoom} [{category}]'); \
+assert row, f'No task with id={search_task_id}'; \
+tid, lat, lng, zoom, category = row; \
+print(f'Task {tid}: ({lat}, {lng}) zoom={zoom} [{category}]'); \
 print(f'Searching...'); \
 ss_dir = os.path.join('output', 'screenshots'); \
 os.makedirs(ss_dir, exist_ok=True); \
-ss_path = os.path.join(ss_dir, f'{mapping_id}.png'); \
+ss_path = os.path.join(ss_dir, f'{search_task_id}.png'); \
 results, url = search_and_extract(lat, lng, category, zoom, max_results=10, on_extract=lambda biz: print(f'  {biz.name} | {biz.place_id} | ({biz.latitude}, {biz.longitude})'), screenshot_path=ss_path); \
 print(f'\nTotal results: {len(results)}'); \
 print(f'Search URL: {url}'); \
@@ -60,14 +60,14 @@ db.close()"
 test-enrich: install
 	@$(PYTHON) -c "\
 import sys; \
-from scraper.db import PlacesDB; \
+from scraper.db import ListingsDB; \
 from scraper.browser import extract_place_details; \
 row_id = int('$(ID)'); \
-db = PlacesDB(); \
+db = ListingsDB(); \
 cur = db._conn.cursor(); \
-cur.execute('SELECT google_maps_url FROM places_info WHERE id = %s', (row_id,)); \
+cur.execute('SELECT google_maps_url FROM listings WHERE id = %s', (row_id,)); \
 row = cur.fetchone(); \
-assert row, f'No places_info row with id={row_id}'; \
+assert row, f'No listings row with id={row_id}'; \
 url = row[0]; \
 print(f'URL: {url}'); \
 details = extract_place_details(url); \
@@ -80,14 +80,14 @@ db.close()"
 test-contact: install
 	@$(PYTHON) -c "\
 import sys; \
-from scraper.db import PlacesDB; \
+from scraper.db import ListingsDB; \
 from scraper.website import extract_website_contacts; \
 row_id = int('$(ID)'); \
-db = PlacesDB(); \
+db = ListingsDB(); \
 cur = db._conn.cursor(); \
-cur.execute('SELECT website FROM places_info WHERE id = %s', (row_id,)); \
+cur.execute('SELECT website FROM listings WHERE id = %s', (row_id,)); \
 row = cur.fetchone(); \
-assert row, f'No places_info row with id={row_id}'; \
+assert row, f'No listings row with id={row_id}'; \
 url = row[0]; \
 assert url, f'Row id={row_id} has no website'; \
 print(f'Website: {url}'); \

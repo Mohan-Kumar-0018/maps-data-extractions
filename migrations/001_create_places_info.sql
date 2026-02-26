@@ -1,4 +1,4 @@
-CREATE TABLE IF NOT EXISTS places_info (
+CREATE TABLE IF NOT EXISTS listings (
     id              BIGSERIAL PRIMARY KEY,
     name            TEXT NOT NULL DEFAULT '',
     rating          DOUBLE PRECISION,
@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS places_info (
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS idx_places_info_category ON places_info (category);
-CREATE INDEX IF NOT EXISTS idx_places_info_coords ON places_info (latitude, longitude);
-CREATE INDEX IF NOT EXISTS idx_places_info_status ON places_info (info_status);
-CREATE INDEX IF NOT EXISTS idx_places_contact_status ON places_info (contact_status);
+CREATE INDEX IF NOT EXISTS idx_listings_category ON listings (category);
+CREATE INDEX IF NOT EXISTS idx_listings_coords ON listings (latitude, longitude);
+CREATE INDEX IF NOT EXISTS idx_listings_status ON listings (info_status);
+CREATE INDEX IF NOT EXISTS idx_listings_contact_status ON listings (contact_status);

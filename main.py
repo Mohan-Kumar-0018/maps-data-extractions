@@ -15,9 +15,9 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from scraper.kml_parser import parse_kml
-from scraper.sampler import generate_sample_points, generate_sub_points, calculate_area_km2
+from scraper.sampler import generate_grid_points, generate_sub_points, calculate_area_km2
 from scraper.browser import search_and_extract, extract_place_details
-from scraper.db import PlacesDB
+from scraper.db import ListingsDB
 from scraper.dedup import PolygonFilter
 from scraper.models import Business
 from scraper.progress import ProgressTracker
@@ -56,11 +56,11 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("list-categories", help="List all categories in the DB")
 
     # ── sample ──────────────────────────────────────────────────────
-    sp = sub.add_parser("sample", help="Parse KML and store sample points in DB")
+    sp = sub.add_parser("sample", help="Parse KML and store grid points in DB")
     sp.add_argument("--category", default=None, help="Single category (default: all categories in DB)")
 
     # ── extract ─────────────────────────────────────────────────────
-    ep = sub.add_parser("extract", help="Extract businesses from pending sample points (resumable)")
+    ep = sub.add_parser("extract", help="Extract businesses from pending search tasks (resumable)")
     ep.add_argument("--category", default=None, help="Single category (default: all categories)")
     ep.add_argument("--workers", type=int, default=4, help="Number of parallel browser workers (default: 4)")
     ep.add_argument("--max-results", type=int, default=20, help="Max results per search point (default: 20)")
@@ -71,7 +71,7 @@ def build_parser() -> argparse.ArgumentParser:
     ep.add_argument("--no-subdivide", action="store_true", help="Disable adaptive subdivision")
 
     # ── enrich ───────────────────────────────────────────────────────
-    nr = sub.add_parser("enrich", help="Enrich places_info by visiting detail pages (resumable)")
+    nr = sub.add_parser("enrich", help="Enrich listings by visiting detail pages (resumable)")
     nr.add_argument("--workers", type=int, default=4, help="Number of parallel browser workers (default: 4)")
     nr.add_argument("--limit", type=int, default=None, help="Max number of places to enrich")
 
@@ -90,7 +90,7 @@ def build_parser() -> argparse.ArgumentParser:
 # ── add-category ────────────────────────────────────────────────────
 
 def cmd_add_category(args: argparse.Namespace) -> None:
-    db = PlacesDB()
+    db = ListingsDB()
     try:
         for name in args.names:
             db.insert_category(name)
@@ -102,7 +102,7 @@ def cmd_add_category(args: argparse.Namespace) -> None:
 # ── list-categories ─────────────────────────────────────────────────
 
 def cmd_list_categories(args: argparse.Namespace) -> None:
-    db = PlacesDB()
+    db = ListingsDB()
     try:
         categories = db.list_categories()
         if not categories:
@@ -118,20 +118,20 @@ def cmd_list_categories(args: argparse.Namespace) -> None:
 # ── Step 1: sample ──────────────────────────────────────────────────
 
 def cmd_sample(args: argparse.Namespace) -> None:
-    """Parse KML, generate sample points, and store them in the DB."""
+    """Parse KML, generate grid points, and store them in the DB."""
     polygon_coords = _load_kml()
     logger.info(f"Polygon has {len(polygon_coords)} vertices")
 
-    sample_points, zoom = generate_sample_points(polygon_coords)
-    logger.info(f"Generated {len(sample_points)} sample points at zoom {zoom}")
+    grid_points, zoom = generate_grid_points(polygon_coords)
+    logger.info(f"Generated {len(grid_points)} grid points at zoom {zoom}")
 
-    db = PlacesDB()
+    db = ListingsDB()
     try:
         # Step 1: Insert geographic points (ON CONFLICT DO NOTHING)
-        point_ids = db.insert_sample_points(sample_points, zoom, KML_FILE_PATH)
-        logger.info(f"Sample points in DB: {len(point_ids)} (new + existing)")
+        point_ids = db.insert_grid_points(grid_points, zoom, KML_FILE_PATH)
+        logger.info(f"Grid points in DB: {len(point_ids)} (new + existing)")
 
-        # Step 2: Determine which categories to create mappings for
+        # Step 2: Determine which categories to create search tasks for
         if args.category:
             categories = [args.category]
         else:
@@ -141,17 +141,17 @@ def cmd_sample(args: argparse.Namespace) -> None:
                 return
             categories = [c["name"] for c in cats]
 
-        # Step 3: Create mappings for each category (ON CONFLICT DO NOTHING)
+        # Step 3: Create search tasks for each category (ON CONFLICT DO NOTHING)
         total_new = 0
         for cat_name in categories:
             cat_id = db.get_or_create_category(cat_name)
-            new_count = db.create_mappings(cat_id, point_ids)
+            new_count = db.create_search_tasks(cat_id, point_ids)
             total_new += new_count
-            logger.info(f"Category '{cat_name}': {new_count} new mappings created")
+            logger.info(f"Category '{cat_name}': {new_count} new search tasks created")
 
         logger.info(
             f"Done: {len(point_ids)} geographic points x {len(categories)} categories. "
-            f"{total_new} new mappings created (duplicates skipped)."
+            f"{total_new} new search tasks created (duplicates skipped)."
         )
     finally:
         db.close()
@@ -160,27 +160,27 @@ def cmd_sample(args: argparse.Namespace) -> None:
 # ── Step 2: extract ─────────────────────────────────────────────────
 
 def cmd_extract(args: argparse.Namespace) -> None:
-    """Fetch pending mappings and run browser extraction. Resumable."""
-    db = PlacesDB()
+    """Fetch pending search tasks and run browser extraction. Resumable."""
+    db = ListingsDB()
 
-    # Reset any mappings left as in_progress from a previous interrupted run
-    reset_count = db.reset_in_progress_mappings(args.category)
+    # Reset any tasks left as in_progress from a previous interrupted run
+    reset_count = db.reset_in_progress_tasks(args.category)
     if reset_count:
-        logger.info(f"Reset {reset_count} interrupted in_progress mappings back to pending")
+        logger.info(f"Reset {reset_count} interrupted in_progress tasks back to pending")
 
-    # Fetch pending mappings — filtered by category if provided, else all
-    pending = db.fetch_pending_mappings(args.category)
+    # Fetch pending tasks — filtered by category if provided, else all
+    pending = db.fetch_pending_tasks(args.category)
 
     if not pending:
         label = f"category '{args.category}'" if args.category else "any category"
-        logger.info(f"No pending mappings for {label}. Nothing to do.")
+        logger.info(f"No pending tasks for {label}. Nothing to do.")
         db.close()
         return
 
     # Summarise what we're about to process
     categories_in_batch = sorted(set(p["category"] for p in pending))
     logger.info(
-        f"Found {len(pending)} pending mappings "
+        f"Found {len(pending)} pending tasks "
         f"across {len(categories_in_batch)} categories: {', '.join(categories_in_batch)}"
     )
 
@@ -203,14 +203,14 @@ def cmd_extract(args: argparse.Namespace) -> None:
 
     total_written = 0
     write_lock = threading.Lock()
-    # Per-mapping counters: {mapping_id: {"new": N, "dup": N, "filtered": N}}
-    mapping_counts: dict = {}
+    # Per-task counters: {search_task_id: {"new": N, "dup": N, "filtered": N}}
+    task_counts: dict = {}
 
-    def _on_extract(biz: Business, point_idx: int, mapping_id: int) -> None:
+    def _on_extract(biz: Business, point_idx: int, search_task_id: int) -> None:
         nonlocal total_written
         if poly_filter and not poly_filter.is_inside(biz):
             with write_lock:
-                mapping_counts[mapping_id]["filtered"] += 1
+                task_counts[search_task_id]["filtered"] += 1
             logger.debug(f"  Filtered out (outside polygon): {biz.name!r} ({biz.latitude}, {biz.longitude})")
             return
         with write_lock:
@@ -218,86 +218,86 @@ def cmd_extract(args: argparse.Namespace) -> None:
             if tracker:
                 tracker.add_business(point_idx)
         try:
-            is_new = db.insert_business(biz, mapping_id=mapping_id)
+            is_new = db.insert_business(biz, search_task_id=search_task_id)
             with write_lock:
                 if is_new:
-                    mapping_counts[mapping_id]["new"] += 1
+                    task_counts[search_task_id]["new"] += 1
                 else:
-                    mapping_counts[mapping_id]["dup"] += 1
+                    task_counts[search_task_id]["dup"] += 1
         except Exception as e:
             logger.warning(f"DB insert failed for {biz.place_id}: {e}")
 
-    def _process_mapping(idx: int, mapping: dict) -> None:
+    def _process_task(idx: int, task: dict) -> None:
         nonlocal total_subdivisions
-        mapping_id = mapping["mapping_id"]
-        lat, lng, zoom = mapping["lat"], mapping["lng"], mapping["zoom"]
-        category = mapping["category"]
+        search_task_id = task["search_task_id"]
+        lat, lng, zoom = task["lat"], task["lng"], task["zoom"]
+        category = task["category"]
 
-        if not db.claim_mapping(mapping_id):
+        if not db.claim_task(search_task_id):
             return  # Already claimed by another process
 
         with write_lock:
-            mapping_counts[mapping_id] = {"new": 0, "dup": 0, "filtered": 0}
+            task_counts[search_task_id] = {"new": 0, "dup": 0, "filtered": 0}
 
         if tracker:
             tracker.mark_active(idx)
 
-        logger.info(f"Mapping {idx+1}/{len(pending)}: ({lat:.6f}, {lng:.6f}) [{category}] [id={mapping_id}]")
+        logger.info(f"Task {idx+1}/{len(pending)}: ({lat:.6f}, {lng:.6f}) [{category}] [id={search_task_id}]")
         try:
-            callback = lambda biz, _idx=idx, _mid=mapping_id: _on_extract(biz, _idx, _mid)
+            callback = lambda biz, _idx=idx, _tid=search_task_id: _on_extract(biz, _idx, _tid)
             screenshot_dir = os.path.join("output", "screenshots")
             os.makedirs(screenshot_dir, exist_ok=True)
-            screenshot_path = os.path.join(screenshot_dir, f"{mapping_id}.png")
+            screenshot_path = os.path.join(screenshot_dir, f"{search_task_id}.png")
             results, used_url = search_and_extract(lat, lng, category, zoom, args.max_results, on_extract=callback, screenshot_path=screenshot_path)
-            mc = mapping_counts[mapping_id]
-            db.mark_mapping_done(
-                mapping_id,
+            tc = task_counts[search_task_id]
+            db.mark_task_done(
+                search_task_id,
                 total_results=len(results),
-                new_count=mc["new"],
-                duplicate_count=mc["dup"],
-                filtered_count=mc["filtered"],
+                new_count=tc["new"],
+                duplicate_count=tc["dup"],
+                filtered_count=tc["filtered"],
                 search_url=used_url,
             )
             if tracker:
                 tracker.mark_done(idx)
             logger.info(
-                f"Mapping {mapping_id} done: {len(results)} raw → "
-                f"{mc['new']} new, {mc['dup']} duplicates, {mc['filtered']} filtered out "
+                f"Task {search_task_id} done: {len(results)} raw → "
+                f"{tc['new']} new, {tc['dup']} duplicates, {tc['filtered']} filtered out "
                 f"— running total: {total_written}"
             )
 
-            # Adaptive subdivision: create sub-points for high-yield mappings
-            if subdivide_enabled and mc["new"] >= subdivide_threshold and zoom < max_zoom:
+            # Adaptive subdivision: create sub-points for high-yield tasks
+            if subdivide_enabled and tc["new"] >= subdivide_threshold and zoom < max_zoom:
                 sub_pts, new_zoom = generate_sub_points(lat, lng, zoom, max_zoom)
                 if sub_pts:
                     sub_pts_inside = [p for p in sub_pts if poly_filter.is_inside_coords(*p)]
                     if sub_pts_inside:
                         cat_id = db.get_or_create_category(category)
-                        new_mappings = db.insert_subdivision_points(sub_pts_inside, new_zoom, KML_FILE_PATH, cat_id)
-                        if new_mappings:
+                        new_tasks = db.insert_subdivision_points(sub_pts_inside, new_zoom, KML_FILE_PATH, cat_id)
+                        if new_tasks:
                             with write_lock:
-                                total_subdivisions += new_mappings
+                                total_subdivisions += new_tasks
                             logger.info(
-                                f"Subdivided mapping {mapping_id}: {new_mappings} new pending "
-                                f"mappings at zoom {new_zoom} ({len(sub_pts_inside)} sub-points)"
+                                f"Subdivided task {search_task_id}: {new_tasks} new pending "
+                                f"tasks at zoom {new_zoom} ({len(sub_pts_inside)} sub-points)"
                             )
         except Exception as e:
-            db.mark_mapping_failed(mapping_id)
+            db.mark_task_failed(search_task_id)
             if tracker:
                 tracker.mark_done(idx)
-            logger.error(f"Mapping {mapping_id} failed: {e}")
+            logger.error(f"Task {search_task_id} failed: {e}")
 
     try:
         if args.workers <= 1:
-            for idx, mapping in enumerate(pending):
-                _process_mapping(idx, mapping)
+            for idx, task in enumerate(pending):
+                _process_task(idx, task)
         else:
             logger.info(f"Starting {args.workers} workers")
             with ThreadPoolExecutor(max_workers=args.workers) as executor:
                 futures = {}
-                for idx, mapping in enumerate(pending):
+                for idx, task in enumerate(pending):
                     time.sleep(idx * 2.0 if idx < args.workers else 0)
-                    futures[executor.submit(_process_mapping, idx, mapping)] = idx
+                    futures[executor.submit(_process_task, idx, task)] = idx
                 for future in as_completed(futures):
                     try:
                         future.result()
@@ -306,7 +306,7 @@ def cmd_extract(args: argparse.Namespace) -> None:
 
         summary = f"Extraction complete: {total_written} businesses inserted"
         if total_subdivisions:
-            summary += f", {total_subdivisions} new subdivision mappings queued (re-run to process)"
+            summary += f", {total_subdivisions} new subdivision tasks queued (re-run to process)"
         logger.info(summary)
     except KeyboardInterrupt:
         logger.info(f"Interrupted — {total_written} businesses inserted so far. Re-run to resume.")
@@ -320,7 +320,7 @@ def cmd_extract(args: argparse.Namespace) -> None:
 
 def cmd_enrich(args: argparse.Namespace) -> None:
     """Visit each business detail page to extract phone, website, and review count."""
-    db = PlacesDB()
+    db = ListingsDB()
 
     # Reset any in_progress enrichments from a previous interrupted run
     reset_count = db.reset_in_progress_enrichments()
@@ -395,7 +395,7 @@ def cmd_enrich(args: argparse.Namespace) -> None:
 
 def cmd_contact(args: argparse.Namespace) -> None:
     """Visit business websites to extract emails, phones, and social media links."""
-    db = PlacesDB()
+    db = ListingsDB()
 
     # Reset any in_progress contacts from a previous interrupted run
     reset_count = db.reset_in_progress_contacts()

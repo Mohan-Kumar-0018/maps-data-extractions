@@ -7,7 +7,7 @@ import webbrowser
 import folium
 
 from scraper.kml_parser import parse_kml
-from scraper.sampler import generate_sample_points, calculate_area_km2
+from scraper.sampler import generate_grid_points, calculate_area_km2
 
 
 def main() -> None:
@@ -19,7 +19,7 @@ def main() -> None:
 
     polygon_coords = parse_kml(args.kml)
     area_km2 = calculate_area_km2(polygon_coords)
-    sample_points, zoom = generate_sample_points(polygon_coords)
+    grid_points, zoom = generate_grid_points(polygon_coords)
 
     # Center map on polygon centroid
     center_lat = sum(lat for lat, _ in polygon_coords) / len(polygon_coords)
@@ -37,8 +37,8 @@ def main() -> None:
         tooltip=f"Area: {area_km2:.2f} km²",
     ).add_to(m)
 
-    # Draw sample points
-    for i, (lat, lng) in enumerate(sample_points):
+    # Draw grid points
+    for i, (lat, lng) in enumerate(grid_points):
         folium.CircleMarker(
             location=[lat, lng],
             radius=6,
@@ -54,7 +54,7 @@ def main() -> None:
     m.save(args.output)
 
     print(f"Area: {area_km2:.2f} km²")
-    print(f"Sample points: {len(sample_points)} at zoom {zoom}")
+    print(f"Grid points: {len(grid_points)} at zoom {zoom}")
     print(f"Map saved to: {args.output}")
 
     if not args.no_open:
