@@ -4,3 +4,5 @@ database:
   name: maps_data
   user: postgres
   password: postgres
+
+screenshots: false   # set true to save screenshots during extraction

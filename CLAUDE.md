@@ -51,7 +51,11 @@ database:
   name: maps_data
   user: postgres
   password: postgres
+
+screenshots: false   # set true to save screenshots during extraction
 ```
+
+- `screenshots` (default `false`): when `true`, extraction saves a PNG per search task to `output/screenshots/`.
 
 KML polygon boundary file: `final_file_path.kml` in project root.
 

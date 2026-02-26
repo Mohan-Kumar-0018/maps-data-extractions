@@ -17,7 +17,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from scraper.kml_parser import parse_kml
 from scraper.sampler import generate_grid_points, generate_sub_points, calculate_area_km2
 from scraper.browser import search_and_extract, extract_place_details
-from scraper.db import ListingsDB
+from scraper.db import ListingsDB, load_config
 from scraper.dedup import PolygonFilter
 from scraper.models import Business
 from scraper.progress import ProgressTracker
@@ -161,6 +161,8 @@ def cmd_sample(args: argparse.Namespace) -> None:
 
 def cmd_extract(args: argparse.Namespace) -> None:
     """Fetch pending search tasks and run browser extraction. Resumable."""
+    config = load_config()
+    screenshots_enabled = config.get("screenshots", False)
     db = ListingsDB()
 
     # Reset any tasks left as in_progress from a previous interrupted run
@@ -245,9 +247,11 @@ def cmd_extract(args: argparse.Namespace) -> None:
         logger.info(f"Task {idx+1}/{len(pending)}: ({lat:.6f}, {lng:.6f}) [{category}] [id={search_task_id}]")
         try:
             callback = lambda biz, _idx=idx, _tid=search_task_id: _on_extract(biz, _idx, _tid)
-            screenshot_dir = os.path.join("output", "screenshots")
-            os.makedirs(screenshot_dir, exist_ok=True)
-            screenshot_path = os.path.join(screenshot_dir, f"{search_task_id}.png")
+            screenshot_path = None
+            if screenshots_enabled:
+                screenshot_dir = os.path.join("output", "screenshots")
+                os.makedirs(screenshot_dir, exist_ok=True)
+                screenshot_path = os.path.join(screenshot_dir, f"{search_task_id}.png")
             results, used_url = search_and_extract(lat, lng, category, zoom, args.max_results, on_extract=callback, screenshot_path=screenshot_path)
             tc = task_counts[search_task_id]
             db.mark_task_done(

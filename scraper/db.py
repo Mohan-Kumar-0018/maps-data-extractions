@@ -27,13 +27,13 @@ RETURNING (xmax = 0) AS is_new;
 """
 
 
-def _load_config() -> dict | None:
-    """Load database config from config.yml if it exists."""
+def load_config() -> dict:
+    """Load full config from config.yml. Returns empty dict if file is missing."""
     if _CONFIG_PATH.is_file():
         with open(_CONFIG_PATH) as f:
             cfg = yaml.safe_load(f)
-        return cfg.get("database") if cfg else None
-    return None
+        return cfg or {}
+    return {}
 
 
 def _get_connection_params() -> dict:
@@ -45,7 +45,7 @@ def _get_connection_params() -> dict:
     if url:
         return {"dsn": url}
 
-    cfg = _load_config()
+    cfg = load_config().get("database")
     if cfg:
         return {
             "host": cfg.get("host", "localhost"),
