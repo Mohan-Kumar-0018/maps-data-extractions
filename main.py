@@ -8,15 +8,19 @@ Three-step resumable pipeline:
 """
 
 import argparse
+import csv
+import itertools
+import json
 import logging
 import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
 
 from scraper.kml_parser import parse_kml
 from scraper.sampler import generate_grid_points, generate_sub_points, calculate_area_km2
-from scraper.browser import search_and_extract, extract_place_details
+from scraper.browser import search_and_extract, extract_place_details, DEFAULT_USER_AGENT
 from scraper.db import ListingsDB, load_config
 from scraper.dedup import PolygonFilter
 from scraper.models import Business
@@ -35,11 +39,35 @@ logger = logging.getLogger(__name__)
 KML_FILE_PATH = "final_file_path.kml"
 
 
-def _load_kml():
-    """Parse the project KML file. Raises FileNotFoundError if missing."""
-    if not os.path.isfile(KML_FILE_PATH):
-        raise FileNotFoundError(f"KML file not found: {KML_FILE_PATH}")
-    return parse_kml(KML_FILE_PATH)
+def _build_proxy_rotator(config: dict):
+    """Return a thread-safe next_proxy() function or None if no proxies configured."""
+    proxies = config.get("proxies")
+    if not proxies:
+        return None
+    cycle = itertools.cycle(proxies)
+    lock = threading.Lock()
+    def next_proxy():
+        with lock:
+            return next(cycle)
+    return next_proxy
+
+
+def _build_ua_rotator(config: dict):
+    """Return a thread-safe next_ua() function, falling back to DEFAULT_USER_AGENT."""
+    agents = config.get("user_agents") or [DEFAULT_USER_AGENT]
+    cycle = itertools.cycle(agents)
+    lock = threading.Lock()
+    def next_ua():
+        with lock:
+            return next(cycle)
+    return next_ua
+
+
+def _load_kml(kml_path: str = KML_FILE_PATH):
+    """Parse a KML file. Raises FileNotFoundError if missing."""
+    if not os.path.isfile(kml_path):
+        raise FileNotFoundError(f"KML file not found: {kml_path}")
+    return parse_kml(kml_path)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -57,10 +85,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     # ── sample ──────────────────────────────────────────────────────
     sp = sub.add_parser("sample", help="Parse KML and store grid points in DB")
+    sp.add_argument("--kml", default=KML_FILE_PATH, help=f"KML polygon file (default: {KML_FILE_PATH})")
     sp.add_argument("--category", default=None, help="Single category (default: all categories in DB)")
 
     # ── extract ─────────────────────────────────────────────────────
     ep = sub.add_parser("extract", help="Extract businesses from pending search tasks (resumable)")
+    ep.add_argument("--kml", default=KML_FILE_PATH, help=f"KML polygon file (default: {KML_FILE_PATH})")
     ep.add_argument("--category", default=None, help="Single category (default: all categories)")
     ep.add_argument("--workers", type=int, default=4, help="Number of parallel browser workers (default: 4)")
     ep.add_argument("--max-results", type=int, default=20, help="Max results per search point (default: 20)")
@@ -69,19 +99,29 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Subdivide when new_count >= N (default: max_results - 2)")
     ep.add_argument("--max-zoom", type=int, default=18, help="Stop subdividing past this zoom (default: 18)")
     ep.add_argument("--no-subdivide", action="store_true", help="Disable adaptive subdivision")
+    ep.add_argument("--retry-failed", action="store_true", help="Reset failed tasks to pending before extraction")
 
     # ── enrich ───────────────────────────────────────────────────────
     nr = sub.add_parser("enrich", help="Enrich listings by visiting detail pages (resumable)")
     nr.add_argument("--workers", type=int, default=4, help="Number of parallel browser workers (default: 4)")
     nr.add_argument("--limit", type=int, default=None, help="Max number of places to enrich")
+    nr.add_argument("--retry-failed", action="store_true", help="Reset failed enrichments to pending before processing")
 
     # ── contact ──────────────────────────────────────────────────────
     ct = sub.add_parser("contact", help="Extract emails, phones, social links from business websites (resumable)")
     ct.add_argument("--workers", type=int, default=4, help="Number of parallel workers (default: 4)")
     ct.add_argument("--limit", type=int, default=None, help="Max number of places to process")
+    ct.add_argument("--retry-failed", action="store_true", help="Reset failed contacts to pending before processing")
+
+    # ── export ─────────────────────────────────────────────────────────
+    ex = sub.add_parser("export", help="Export listings to CSV or JSON")
+    ex.add_argument("--format", choices=["csv", "json"], default="csv", help="Output format (default: csv)")
+    ex.add_argument("--output", "-o", default=None, help="Output file path (default: auto-generated in output/)")
+    ex.add_argument("--category", default=None, help="Single category (default: all)")
 
     # ── dashboard ────────────────────────────────────────────────────
     db = sub.add_parser("dashboard", help="Start interactive data summary dashboard")
+    db.add_argument("--kml", default=KML_FILE_PATH, help=f"KML polygon file (default: {KML_FILE_PATH})")
     db.add_argument("--port", type=int, default=8090, help="Dashboard server port (default: 8090)")
 
     return parser
@@ -119,7 +159,8 @@ def cmd_list_categories(args: argparse.Namespace) -> None:
 
 def cmd_sample(args: argparse.Namespace) -> None:
     """Parse KML, generate grid points, and store them in the DB."""
-    polygon_coords = _load_kml()
+    kml_path = args.kml
+    polygon_coords = _load_kml(kml_path)
     logger.info(f"Polygon has {len(polygon_coords)} vertices")
 
     grid_points, zoom = generate_grid_points(polygon_coords)
@@ -128,7 +169,7 @@ def cmd_sample(args: argparse.Namespace) -> None:
     db = ListingsDB()
     try:
         # Step 1: Insert geographic points (ON CONFLICT DO NOTHING)
-        point_ids = db.insert_grid_points(grid_points, zoom, KML_FILE_PATH)
+        point_ids = db.insert_grid_points(grid_points, zoom, kml_path)
         logger.info(f"Grid points in DB: {len(point_ids)} (new + existing)")
 
         # Step 2: Determine which categories to create search tasks for
@@ -163,12 +204,19 @@ def cmd_extract(args: argparse.Namespace) -> None:
     """Fetch pending search tasks and run browser extraction. Resumable."""
     config = load_config()
     screenshots_enabled = config.get("screenshots", False)
+    kml_path = args.kml
     db = ListingsDB()
 
     # Reset any tasks left as in_progress from a previous interrupted run
     reset_count = db.reset_in_progress_tasks(args.category)
     if reset_count:
         logger.info(f"Reset {reset_count} interrupted in_progress tasks back to pending")
+
+    # Retry failed tasks if requested
+    if args.retry_failed:
+        retry_count = db.reset_failed_tasks(args.category)
+        if retry_count:
+            logger.info(f"Reset {retry_count} failed tasks back to pending for retry")
 
     # Fetch pending tasks — filtered by category if provided, else all
     pending = db.fetch_pending_tasks(args.category)
@@ -187,7 +235,7 @@ def cmd_extract(args: argparse.Namespace) -> None:
     )
 
     # Polygon filter (always active) + optional live server
-    polygon_coords = _load_kml()
+    polygon_coords = _load_kml(kml_path)
     poly_filter = PolygonFilter(polygon_coords)
     server = None
     tracker = None
@@ -202,6 +250,10 @@ def cmd_extract(args: argparse.Namespace) -> None:
     subdivide_threshold = args.subdivide_threshold if args.subdivide_threshold is not None else (args.max_results - 2)
     max_zoom = args.max_zoom
     total_subdivisions = 0
+
+    # Proxy / user-agent rotation
+    next_proxy = _build_proxy_rotator(config)
+    next_ua = _build_ua_rotator(config)
 
     total_written = 0
     write_lock = threading.Lock()
@@ -252,7 +304,9 @@ def cmd_extract(args: argparse.Namespace) -> None:
                 screenshot_dir = os.path.join("output", "screenshots")
                 os.makedirs(screenshot_dir, exist_ok=True)
                 screenshot_path = os.path.join(screenshot_dir, f"{search_task_id}.png")
-            results, used_url = search_and_extract(lat, lng, category, zoom, args.max_results, on_extract=callback, screenshot_path=screenshot_path)
+            proxy = next_proxy() if next_proxy else None
+            ua = next_ua()
+            results, used_url = search_and_extract(lat, lng, category, zoom, args.max_results, on_extract=callback, screenshot_path=screenshot_path, proxy=proxy, user_agent=ua)
             tc = task_counts[search_task_id]
             db.mark_task_done(
                 search_task_id,
@@ -277,7 +331,7 @@ def cmd_extract(args: argparse.Namespace) -> None:
                     sub_pts_inside = [p for p in sub_pts if poly_filter.is_inside_coords(*p)]
                     if sub_pts_inside:
                         cat_id = db.get_or_create_category(category)
-                        new_tasks = db.insert_subdivision_points(sub_pts_inside, new_zoom, KML_FILE_PATH, cat_id)
+                        new_tasks = db.insert_subdivision_points(sub_pts_inside, new_zoom, kml_path, cat_id)
                         if new_tasks:
                             with write_lock:
                                 total_subdivisions += new_tasks
@@ -324,12 +378,19 @@ def cmd_extract(args: argparse.Namespace) -> None:
 
 def cmd_enrich(args: argparse.Namespace) -> None:
     """Visit each business detail page to extract phone, website, and review count."""
+    config = load_config()
     db = ListingsDB()
 
     # Reset any in_progress enrichments from a previous interrupted run
     reset_count = db.reset_in_progress_enrichments()
     if reset_count:
         logger.info(f"Reset {reset_count} interrupted in_progress enrichments back to pending")
+
+    # Retry failed enrichments if requested
+    if args.retry_failed:
+        retry_count = db.reset_failed_enrichments()
+        if retry_count:
+            logger.info(f"Reset {retry_count} failed enrichments back to pending for retry")
 
     pending = db.fetch_pending_enrichments(limit=args.limit)
     if not pending:
@@ -338,6 +399,10 @@ def cmd_enrich(args: argparse.Namespace) -> None:
         return
 
     logger.info(f"Found {len(pending)} places to enrich")
+
+    # Proxy / user-agent rotation
+    next_proxy = _build_proxy_rotator(config)
+    next_ua = _build_ua_rotator(config)
 
     done_count = 0
     failed_count = 0
@@ -353,7 +418,9 @@ def cmd_enrich(args: argparse.Namespace) -> None:
 
         logger.info(f"Enriching {idx+1}/{len(pending)}: id={row_id}")
         try:
-            details = extract_place_details(url)
+            proxy = next_proxy() if next_proxy else None
+            ua = next_ua()
+            details = extract_place_details(url, proxy=proxy, user_agent=ua)
             db.update_enrichment(
                 row_id,
                 total_reviews=details["total_reviews"],
@@ -405,6 +472,12 @@ def cmd_contact(args: argparse.Namespace) -> None:
     reset_count = db.reset_in_progress_contacts()
     if reset_count:
         logger.info(f"Reset {reset_count} interrupted in_progress contacts back to pending")
+
+    # Retry failed contacts if requested
+    if args.retry_failed:
+        retry_count = db.reset_failed_contacts()
+        if retry_count:
+            logger.info(f"Reset {retry_count} failed contacts back to pending for retry")
 
     pending = db.fetch_pending_contacts(limit=args.limit)
     if not pending:
@@ -469,11 +542,57 @@ def cmd_contact(args: argparse.Namespace) -> None:
         db.close()
 
 
+# ── export ────────────────────────────────────────────────────────
+
+def _serialize_value(val):
+    """Convert datetime objects to ISO format strings for JSON/CSV."""
+    if isinstance(val, datetime):
+        return val.isoformat()
+    return val
+
+
+def cmd_export(args: argparse.Namespace) -> None:
+    """Export listings to CSV or JSON."""
+    db = ListingsDB()
+    try:
+        rows = db.export_listings(category=args.category)
+    finally:
+        db.close()
+
+    if not rows:
+        logger.info("No listings to export.")
+        return
+
+    # Determine output path
+    os.makedirs("output", exist_ok=True)
+    if args.output:
+        out_path = args.output
+    else:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        out_path = os.path.join("output", f"listings_{timestamp}.{args.format}")
+
+    # Serialize datetime values
+    for row in rows:
+        for key in row:
+            row[key] = _serialize_value(row[key])
+
+    if args.format == "csv":
+        with open(out_path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=rows[0].keys())
+            writer.writeheader()
+            writer.writerows(rows)
+    else:
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump(rows, f, indent=2, default=str)
+
+    logger.info(f"Exported {len(rows)} listings to {out_path}")
+
+
 # ── dashboard ──────────────────────────────────────────────────────
 
 def cmd_dashboard(args: argparse.Namespace) -> None:
     """Start an interactive data summary dashboard."""
-    polygon_coords = _load_kml()
+    polygon_coords = _load_kml(args.kml)
     start_dashboard_server(port=args.port, polygon_coords=polygon_coords)
 
 
@@ -495,6 +614,8 @@ def main() -> None:
         cmd_enrich(args)
     elif args.command == "contact":
         cmd_contact(args)
+    elif args.command == "export":
+        cmd_export(args)
     elif args.command == "dashboard":
         cmd_dashboard(args)
     else:

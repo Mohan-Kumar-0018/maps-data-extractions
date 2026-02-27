@@ -2,7 +2,7 @@ VENV := venv
 PYTHON := $(VENV)/bin/python
 PIP := $(VENV)/bin/pip
 
-.PHONY: install run preview test test-extract test-enrich test-contact clean setup-db reset-db dashboard
+.PHONY: install run preview test test-extract test-enrich test-contact clean setup-db reset-db dashboard export
 
 install:
 	$(PIP) install -r requirements.txt
@@ -99,6 +99,9 @@ db.close()"
 
 dashboard: install
 	$(PYTHON) main.py dashboard $(ARGS)
+
+export: install
+	$(PYTHON) main.py export $(ARGS)
 
 clean:
 	rm -rf output/*.csv

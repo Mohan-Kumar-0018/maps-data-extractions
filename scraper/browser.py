@@ -13,14 +13,18 @@ from scraper.models import Business
 logger = logging.getLogger(__name__)
 
 PAGE_LOAD_TIMEOUT = 30000  # ms
-USER_AGENT = (
+DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/120.0.0.0 Safari/537.36"
 )
 
 
-def extract_place_details(google_maps_url: str) -> dict:
+def extract_place_details(
+    google_maps_url: str,
+    proxy: Optional[str] = None,
+    user_agent: Optional[str] = None,
+) -> dict:
     """
     Visit a Google Maps detail page and extract phone, website, and total reviews.
 
@@ -30,11 +34,14 @@ def extract_place_details(google_maps_url: str) -> dict:
     result = {"total_reviews": None, "phone": "", "website": "", "address": ""}
 
     with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=True)
+        launch_kwargs = {"headless": True}
+        if proxy:
+            launch_kwargs["proxy"] = {"server": proxy}
+        browser = pw.chromium.launch(**launch_kwargs)
         try:
             context = browser.new_context(
                 viewport={"width": 1920, "height": 1080},
-                user_agent=USER_AGENT,
+                user_agent=user_agent or DEFAULT_USER_AGENT,
             )
             page = context.new_page()
             page.goto(google_maps_url, timeout=PAGE_LOAD_TIMEOUT, wait_until="domcontentloaded")
@@ -129,6 +136,8 @@ def search_and_extract(
     max_results: int = 50,
     on_extract: Optional[callable] = None,
     screenshot_path: Optional[str] = None,
+    proxy: Optional[str] = None,
+    user_agent: Optional[str] = None,
 ) -> List[Business]:
     """
     Launch a browser, search Google Maps at the given coordinates, and
@@ -146,11 +155,14 @@ def search_and_extract(
     businesses: List[Business] = []
 
     with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=True)
+        launch_kwargs = {"headless": True}
+        if proxy:
+            launch_kwargs["proxy"] = {"server": proxy}
+        browser = pw.chromium.launch(**launch_kwargs)
         try:
             context = browser.new_context(
                 viewport={"width": 1920, "height": 1080},
-                user_agent=USER_AGENT,
+                user_agent=user_agent or DEFAULT_USER_AGENT,
             )
             page = context.new_page()
 

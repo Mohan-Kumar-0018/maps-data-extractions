@@ -6,3 +6,12 @@ database:
   password: postgres
 
 screenshots: false   # set true to save screenshots during extraction
+
+# Proxy rotation — uncomment and add your proxies
+# proxies:
+#   - "http://user:pass@proxy1:8080"
+#   - "http://user:pass@proxy2:8080"
+
+# Custom user agents — uncomment to override the default
+# user_agents:
+#   - "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"

@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 
 import psycopg2
+from psycopg2.extras import execute_values
 import yaml
 
 from typing import List, Tuple
@@ -107,26 +108,37 @@ class ListingsDB:
         """Bulk-insert geographic grid points (ON CONFLICT DO NOTHING).
 
         Returns list of all point IDs matching the input coordinates
-        (both newly inserted and already existing).
+        (both newly inserted and already existing), preserving input order.
         """
-        ids = []
-        sql = """
-            INSERT INTO grid_points (lat, lng, zoom, kml_file)
-            VALUES (%s, %s, %s, %s)
-            ON CONFLICT (lat, lng, zoom, kml_file) DO NOTHING
-        """
-        select_sql = """
-            SELECT id FROM grid_points
-            WHERE lat = %s AND lng = %s AND zoom = %s AND kml_file = %s
-        """
+        if not points:
+            return []
+
+        values = [(lat, lng, zoom, kml_file) for lat, lng in points]
+
         with self._conn.cursor() as cur:
-            for lat, lng in points:
-                cur.execute(sql, (lat, lng, zoom, kml_file))
-                cur.execute(select_sql, (lat, lng, zoom, kml_file))
-                row = cur.fetchone()
-                if row:
-                    ids.append(row[0])
-        return ids
+            # Bulk insert — skip duplicates
+            execute_values(
+                cur,
+                "INSERT INTO grid_points (lat, lng, zoom, kml_file) VALUES %s ON CONFLICT (lat, lng, zoom, kml_file) DO NOTHING",
+                values,
+            )
+
+            # Bulk fetch IDs in input order using unnest + ordinality
+            lats = [lat for lat, lng in points]
+            lngs = [lng for lat, lng in points]
+            cur.execute(
+                """
+                SELECT gp.id
+                FROM unnest(%s::double precision[], %s::double precision[])
+                    WITH ORDINALITY AS t(lat, lng, ord)
+                JOIN grid_points gp
+                    ON gp.lat = t.lat AND gp.lng = t.lng
+                    AND gp.zoom = %s AND gp.kml_file = %s
+                ORDER BY t.ord
+                """,
+                (lats, lngs, zoom, kml_file),
+            )
+            return [row[0] for row in cur.fetchall()]
 
     def insert_subdivision_points(
         self,
@@ -150,17 +162,17 @@ class ListingsDB:
         Uses ON CONFLICT DO NOTHING to skip already-existing tasks.
         Returns number of new rows inserted.
         """
-        sql = """
-            INSERT INTO search_tasks (category_id, grid_point_id)
-            VALUES (%s, %s)
-            ON CONFLICT (category_id, grid_point_id) DO NOTHING
-        """
-        inserted = 0
+        if not grid_point_ids:
+            return 0
+
+        values = [(category_id, gp_id) for gp_id in grid_point_ids]
         with self._conn.cursor() as cur:
-            for gp_id in grid_point_ids:
-                cur.execute(sql, (category_id, gp_id))
-                inserted += cur.rowcount
-        return inserted
+            execute_values(
+                cur,
+                "INSERT INTO search_tasks (category_id, grid_point_id) VALUES %s ON CONFLICT (category_id, grid_point_id) DO NOTHING",
+                values,
+            )
+            return cur.rowcount
 
     def fetch_pending_tasks(self, category: str | None = None) -> List[dict]:
         """Return all pending search tasks, joined with grid_points and categories.
@@ -265,6 +277,28 @@ class ListingsDB:
                 cur.execute(sql)
                 return cur.rowcount
 
+    def reset_failed_tasks(self, category: str | None = None) -> int:
+        """Reset failed tasks back to pending for retry."""
+        if category:
+            sql = """
+                UPDATE search_tasks t
+                SET status = 'pending', updated_at = NOW()
+                FROM categories c
+                WHERE t.category_id = c.id AND c.name = %s AND t.status = 'failed'
+            """
+            with self._conn.cursor() as cur:
+                cur.execute(sql, (category,))
+                return cur.rowcount
+        else:
+            sql = """
+                UPDATE search_tasks
+                SET status = 'pending', updated_at = NOW()
+                WHERE status = 'failed'
+            """
+            with self._conn.cursor() as cur:
+                cur.execute(sql)
+                return cur.rowcount
+
     # ── enrichment (listings.info_status) ─────────────────────────────
 
     def fetch_pending_enrichments(self, limit: int | None = None) -> List[dict]:
@@ -318,6 +352,17 @@ class ListingsDB:
             UPDATE listings
             SET info_status = 'pending', updated_at = NOW()
             WHERE info_status = 'in_progress'
+        """
+        with self._conn.cursor() as cur:
+            cur.execute(sql)
+            return cur.rowcount
+
+    def reset_failed_enrichments(self) -> int:
+        """Reset failed enrichments back to pending for retry."""
+        sql = """
+            UPDATE listings
+            SET info_status = 'pending', updated_at = NOW()
+            WHERE info_status = 'failed'
         """
         with self._conn.cursor() as cur:
             cur.execute(sql)
@@ -380,6 +425,17 @@ class ListingsDB:
             cur.execute(sql)
             return cur.rowcount
 
+    def reset_failed_contacts(self) -> int:
+        """Reset failed contacts back to pending for retry."""
+        sql = """
+            UPDATE listings
+            SET contact_status = 'pending', updated_at = NOW()
+            WHERE contact_status = 'failed'
+        """
+        with self._conn.cursor() as cur:
+            cur.execute(sql)
+            return cur.rowcount
+
     # ── categories table ──────────────────────────────────────────────
 
     def insert_category(self, name: str) -> None:
@@ -414,6 +470,29 @@ class ListingsDB:
                 {"id": row[0], "name": row[1], "created_at": row[2]}
                 for row in cur.fetchall()
             ]
+
+    # ── export ────────────────────────────────────────────────────────
+
+    def export_listings(self, category: str | None = None) -> List[dict]:
+        """Return all listings as dicts, optionally filtered by category."""
+        columns = [
+            "id", "name", "rating", "total_reviews", "address", "phone",
+            "website", "opening_hours", "latitude", "longitude",
+            "google_maps_url", "place_id", "category", "duplicate_count",
+            "info_status", "contact_status", "website_email", "website_phone",
+            "social_media", "created_at", "updated_at",
+        ]
+        col_str = ", ".join(columns)
+        if category:
+            sql = f"SELECT {col_str} FROM listings WHERE category = %s ORDER BY id"
+            params: tuple = (category,)
+        else:
+            sql = f"SELECT {col_str} FROM listings ORDER BY id"
+            params = ()
+
+        with self._conn.cursor() as cur:
+            cur.execute(sql, params)
+            return [dict(zip(columns, row)) for row in cur.fetchall()]
 
     # ── dashboard queries (read-only) ─────────────────────────────────
 
@@ -611,6 +690,83 @@ class ListingsDB:
                 {"duplicate_count": row[0], "business_count": row[1]}
                 for row in cur.fetchall()
             ]
+
+    def dashboard_field_completeness(self) -> dict:
+        """Per-field completeness stats for the data quality dashboard."""
+        sql = """
+            SELECT
+                COUNT(*) AS total,
+                COUNT(NULLIF(name, '')) AS name_filled,
+                COUNT(rating) AS rating_filled,
+                COUNT(total_reviews) AS total_reviews_filled,
+                COUNT(NULLIF(address, '')) AS address_filled,
+                COUNT(NULLIF(phone, '')) AS phone_filled,
+                COUNT(NULLIF(website, '')) AS website_filled,
+                COUNT(NULLIF(opening_hours, '')) AS opening_hours_filled,
+                COUNT(latitude) AS latitude_filled,
+                COUNT(longitude) AS longitude_filled,
+                COUNT(NULLIF(google_maps_url, '')) AS google_maps_url_filled,
+                COUNT(NULLIF(place_id, '')) AS place_id_filled,
+                COUNT(NULLIF(website_email, '')) AS website_email_filled,
+                COUNT(NULLIF(website_phone, '')) AS website_phone_filled,
+                COUNT(NULLIF(social_media, '')) AS social_media_filled
+            FROM listings
+        """
+        field_names = [
+            "name", "rating", "total_reviews", "address", "phone", "website",
+            "opening_hours", "latitude", "longitude", "google_maps_url",
+            "place_id", "website_email", "website_phone", "social_media",
+        ]
+        with self._conn.cursor() as cur:
+            cur.execute(sql)
+            row = cur.fetchone()
+            total = row[0] or 0
+            fields = []
+            total_filled = 0
+            for i, name in enumerate(field_names):
+                filled = row[i + 1]
+                pct = round(filled / total * 100, 1) if total > 0 else 0
+                fields.append({"field": name, "filled": filled, "pct": pct})
+                total_filled += filled
+            overall_pct = round(total_filled / (total * len(field_names)) * 100, 1) if total > 0 else 0
+            return {"total_listings": total, "overall_pct": overall_pct, "fields": fields}
+
+    def dashboard_category_completeness(self) -> List[dict]:
+        """Per-category average field completeness."""
+        sql = """
+            SELECT
+                c.name AS category,
+                COUNT(l.id) AS total,
+                AVG(
+                    (CASE WHEN l.name != '' AND l.name IS NOT NULL THEN 1 ELSE 0 END) +
+                    (CASE WHEN l.rating IS NOT NULL THEN 1 ELSE 0 END) +
+                    (CASE WHEN l.total_reviews IS NOT NULL THEN 1 ELSE 0 END) +
+                    (CASE WHEN l.address != '' AND l.address IS NOT NULL THEN 1 ELSE 0 END) +
+                    (CASE WHEN l.phone != '' AND l.phone IS NOT NULL THEN 1 ELSE 0 END) +
+                    (CASE WHEN l.website != '' AND l.website IS NOT NULL THEN 1 ELSE 0 END) +
+                    (CASE WHEN l.opening_hours != '' AND l.opening_hours IS NOT NULL THEN 1 ELSE 0 END) +
+                    (CASE WHEN l.latitude IS NOT NULL THEN 1 ELSE 0 END) +
+                    (CASE WHEN l.longitude IS NOT NULL THEN 1 ELSE 0 END) +
+                    (CASE WHEN l.google_maps_url != '' AND l.google_maps_url IS NOT NULL THEN 1 ELSE 0 END)
+                )::numeric AS avg_fields_filled
+            FROM listings l
+            JOIN search_tasks t ON t.id = l.search_task_id
+            JOIN categories c ON c.id = t.category_id
+            GROUP BY c.name
+            ORDER BY c.name
+        """
+        with self._conn.cursor() as cur:
+            cur.execute(sql)
+            results = []
+            for row in cur.fetchall():
+                avg_filled = float(row[2]) if row[2] else 0
+                results.append({
+                    "category": row[0],
+                    "total": row[1],
+                    "avg_fields_filled": round(avg_filled, 1),
+                    "completeness_pct": round(avg_filled / 10 * 100, 1),
+                })
+            return results
 
     def close(self) -> None:
         self._conn.close()

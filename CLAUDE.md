@@ -23,11 +23,18 @@ make reset-db                   # Drop all tables and recreate (dev only)
 make run ARGS='add-category "restaurants" "hospitals"'
 make run ARGS="list-categories"
 make run ARGS="sample"
+make run ARGS='sample --kml other.kml'
 make run ARGS='sample --category "restaurants"'
 make run ARGS="extract --workers 4 --max-results 10"
 make run ARGS='extract --category "restaurants" --workers 4 --live'
+make run ARGS='extract --retry-failed --workers 4'
 make run ARGS="enrich --workers 4"
+make run ARGS='enrich --retry-failed --workers 4'
 make run ARGS="contact --workers 4 --limit 100"
+make run ARGS='contact --retry-failed --workers 4'
+make run ARGS='export --format csv'
+make run ARGS='export --format json -o out.json --category "restaurants"'
+make export ARGS='--format csv'  # Shorthand for export
 make dashboard                  # Interactive summary at http://localhost:8090
 
 # Testing individual records
@@ -53,16 +60,26 @@ database:
   password: postgres
 
 screenshots: false   # set true to save screenshots during extraction
+
+# Proxy rotation — uncomment and add your proxies
+# proxies:
+#   - "http://user:pass@proxy1:8080"
+
+# Custom user agents — uncomment to override the default
+# user_agents:
+#   - "Mozilla/5.0 ..."
 ```
 
 - `screenshots` (default `false`): when `true`, extraction saves a PNG per search task to `output/screenshots/`.
+- `proxies` (optional): list of proxy URLs for round-robin rotation during extraction/enrichment.
+- `user_agents` (optional): list of user-agent strings for round-robin rotation (defaults to built-in Chrome UA).
 
-KML polygon boundary file: `final_file_path.kml` in project root.
+KML polygon boundary file: `final_file_path.kml` in project root (overridable with `--kml`).
 
 ## Architecture
 
 ```
-main.py                  # CLI: add-category, list-categories, sample, extract, enrich, contact, dashboard
+main.py                  # CLI: add-category, list-categories, sample, extract, enrich, contact, export, dashboard
 scraper/
   browser.py             # Playwright automation: search_and_extract(), extract_place_details()
   db.py                  # ListingsDB class — all PostgreSQL operations
@@ -98,9 +115,10 @@ listings                                         — extracted businesses
 3. extract      → pending search tasks → browser search → listings (resumable, adaptive subdivision)
 4. enrich       → pending info_status → visit detail pages → phone, website, address, reviews
 5. contact      → pending contact_status + has website → crawl site → emails, phones, social links
+6. export       → listings → CSV or JSON file in output/
 ```
 
-Each step is resumable: uses `claim_*()` (atomic `UPDATE WHERE status='pending'`) then `mark_*_done/failed()`. Interrupted runs reset `in_progress` back to `pending` on restart.
+Each step is resumable: uses `claim_*()` (atomic `UPDATE WHERE status='pending'`) then `mark_*_done/failed()`. Interrupted runs reset `in_progress` back to `pending` on restart. Use `--retry-failed` on extract/enrich/contact to also reset `failed` back to `pending`.
 
 ### Key Design Decisions
 
@@ -111,6 +129,9 @@ Each step is resumable: uses `claim_*()` (atomic `UPDATE WHERE status='pending'`
 - **Contact extraction uses requests**: `website.py` crawls homepage + up to 2 contact/about pages via HTTP (no browser needed), unlike extraction/enrichment which use Playwright
 - **Staggered starts**: 2-second delay per worker to reduce detection risk
 - **Multiple CSS selector fallbacks**: Each browser extraction field tries several selectors
+- **Bulk DB inserts**: `insert_grid_points()` and `create_search_tasks()` use `psycopg2.extras.execute_values` for single-round-trip bulk operations
+- **Proxy rotation**: Optional round-robin proxy and user-agent rotation via `config.yml`, thread-safe with locks
+- **Data quality dashboard**: Field completeness bars and per-category completeness table in the dashboard
 
 ## Dev Workflow
 

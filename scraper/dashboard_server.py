@@ -171,7 +171,28 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     </div>
   </div>
 
-  <!-- ROW 5: Zero-result points -->
+  <!-- ROW 5: Data Quality -->
+  <div class="row">
+    <div class="col">
+      <div class="panel">
+        <h3>Field Completeness <span id="dq-overall" style="font-size:13px;color:#999;margin-left:8px;"></span></h3>
+        <div id="field-bars"></div>
+      </div>
+    </div>
+    <div class="col">
+      <div class="panel">
+        <h3>Completeness by Category</h3>
+        <div style="overflow-x:auto; max-height: 400px; overflow-y: auto;">
+          <table id="cat-comp-table">
+            <thead><tr><th>Category</th><th>Listings</th><th>Avg Fields</th><th>Completeness</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ROW 6: Zero-result points -->
   <div class="row">
     <div class="col" style="flex:unset; width:100%;">
       <div class="panel">
@@ -398,6 +419,27 @@ async function load() {
     } else {
       fillTable('zero-table', d.zero_result_points, ['id', 'lat', 'lng', 'total_mappings']);
     }
+
+    // Data quality — field completeness bars
+    if (d.field_completeness) {
+      const fc = d.field_completeness;
+      document.getElementById('dq-overall').textContent = '(Overall: ' + fc.overall_pct + '%)';
+      const barsEl = document.getElementById('field-bars');
+      barsEl.innerHTML = fc.fields.map(f => {
+        const color = f.pct >= 80 ? '#4caf50' : f.pct >= 50 ? '#ff9800' : '#f44336';
+        return '<div class="funnel-bar">' +
+          '<div class="funnel-label"><span>' + f.field + '</span><span>' + f.filled.toLocaleString() + ' (' + f.pct + '%)</span></div>' +
+          '<div class="funnel-track"><div class="funnel-fill" style="width:' + f.pct + '%;background:' + color + '"></div></div>' +
+          '</div>';
+      }).join('');
+    }
+
+    // Data quality — category completeness table
+    if (d.category_completeness && d.category_completeness.length > 0) {
+      fillTable('cat-comp-table', d.category_completeness, [
+        'category', 'total', 'avg_fields_filled', 'completeness_pct'
+      ]);
+    }
   } catch (e) {
     console.error('Failed to load summary:', e);
   }
@@ -447,6 +489,8 @@ def start_dashboard_server(port: int = 8090, polygon_coords=None) -> None:
             "zero_result_points": db.dashboard_zero_result_points(),
             "duplicate_hotspots": db.dashboard_duplicate_hotspots(),
             "duplicate_distribution": db.dashboard_duplicate_distribution(),
+            "field_completeness": db.dashboard_field_completeness(),
+            "category_completeness": db.dashboard_category_completeness(),
             "polygon": [],
         }
         breakdown = db.dashboard_point_category_breakdown()
