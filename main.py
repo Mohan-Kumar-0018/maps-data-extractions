@@ -2,8 +2,8 @@
 """CLI entry point for the Google Maps polygon scraper.
 
 Resumable pipeline:
-  python main.py sample  --kml boundary.kml
-  python main.py extract --workers 4 --max-results 10
+  python main.py sample  --kml sample_map.kml
+  python main.py extract --kml sample_map.kml --workers 4
   python main.py enrich  --workers 4
   python main.py contact --workers 4
 """
@@ -224,8 +224,8 @@ def cmd_extract(args: argparse.Namespace) -> None:
         nonlocal total_written
         if poly_filter and not poly_filter.is_inside(biz):
             with write_lock:
-                task_counts[search_task_id]["filtered"] += 1
-            logger.debug(f"  Filtered out (outside polygon): {biz.name!r} ({biz.latitude}, {biz.longitude})")
+                task_counts[search_task_id]["out_of_bounds"] += 1
+            logger.debug(f"  Out of bounds (outside polygon): {biz.name!r} ({biz.latitude}, {biz.longitude})")
             return
         with write_lock:
             total_written += 1
@@ -251,7 +251,7 @@ def cmd_extract(args: argparse.Namespace) -> None:
             return  # Already claimed by another process
 
         with write_lock:
-            task_counts[search_task_id] = {"new": 0, "dup": 0, "filtered": 0}
+            task_counts[search_task_id] = {"new": 0, "dup": 0, "out_of_bounds": 0}
 
         if tracker:
             tracker.mark_active(idx)
@@ -273,14 +273,14 @@ def cmd_extract(args: argparse.Namespace) -> None:
                 total_results=len(results),
                 new_count=tc["new"],
                 duplicate_count=tc["dup"],
-                filtered_count=tc["filtered"],
+                out_of_bounds_count=tc["out_of_bounds"],
                 search_url=used_url,
             )
             if tracker:
                 tracker.mark_done(idx)
             logger.info(
                 f"Task {search_task_id} done: {len(results)} raw → "
-                f"{tc['new']} new, {tc['dup']} duplicates, {tc['filtered']} filtered out "
+                f"{tc['new']} new, {tc['dup']} duplicates, {tc['out_of_bounds']} out of bounds "
                 f"— running total: {total_written}"
             )
 

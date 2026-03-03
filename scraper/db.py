@@ -152,11 +152,11 @@ class ListingsDB:
         Returns number of new tasks created.
         """
         point_ids = self.insert_grid_points(sub_points, zoom, kml_file)
-        return self.create_search_tasks(category_id, point_ids)
+        return self.create_search_tasks(category_id, point_ids, source="subdivision")
 
     # ── search_tasks table ────────────────────────────────────────────
 
-    def create_search_tasks(self, category_id: int, grid_point_ids: List[int]) -> int:
+    def create_search_tasks(self, category_id: int, grid_point_ids: List[int], source: str = "grid") -> int:
         """Bulk-insert search tasks for a category and list of grid point IDs.
 
         Uses ON CONFLICT DO NOTHING to skip already-existing tasks.
@@ -165,11 +165,11 @@ class ListingsDB:
         if not grid_point_ids:
             return 0
 
-        values = [(category_id, gp_id) for gp_id in grid_point_ids]
+        values = [(category_id, gp_id, source) for gp_id in grid_point_ids]
         with self._conn.cursor() as cur:
             execute_values(
                 cur,
-                "INSERT INTO search_tasks (category_id, grid_point_id) VALUES %s ON CONFLICT (category_id, grid_point_id) DO NOTHING",
+                "INSERT INTO search_tasks (category_id, grid_point_id, source) VALUES %s ON CONFLICT (category_id, grid_point_id) DO NOTHING",
                 values,
             )
             return cur.rowcount
@@ -230,18 +230,18 @@ class ListingsDB:
         total_results: int = 0,
         new_count: int = 0,
         duplicate_count: int = 0,
-        filtered_count: int = 0,
+        out_of_bounds_count: int = 0,
         search_url: str = "",
     ) -> None:
         sql = """
             UPDATE search_tasks
             SET status = 'done', total_results = %s,
-                new_count = %s, duplicate_count = %s, filtered_count = %s,
+                new_count = %s, duplicate_count = %s, out_of_bounds_count = %s,
                 search_url = %s, updated_at = NOW()
             WHERE id = %s
         """
         with self._conn.cursor() as cur:
-            cur.execute(sql, (total_results, new_count, duplicate_count, filtered_count, search_url, search_task_id))
+            cur.execute(sql, (total_results, new_count, duplicate_count, out_of_bounds_count, search_url, search_task_id))
 
     def mark_task_failed(self, search_task_id: int) -> None:
         sql = """

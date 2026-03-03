@@ -96,8 +96,8 @@ migrations/              # SQL files (002 superseded by 004)
 categories (id, name)
 grid_points (id, lat, lng, zoom, kml_file)      — UNIQUE(lat,lng,zoom,kml_file)
 search_tasks                                     — junction table (work items)
-  (id, category_id, grid_point_id, status, total_results, new_count,
-   duplicate_count, filtered_count, search_url)
+  (id, category_id, grid_point_id, status, source, total_results,
+   new_count, duplicate_count, out_of_bounds_count, search_url)
 listings                                         — extracted businesses
   (..., search_task_id FK, place_id UNIQUE, duplicate_count,
    info_status, contact_status, website_email, website_phone, social_media)

@@ -36,7 +36,7 @@ Each step is resumable — if interrupted, re-run the same command to pick up wh
 Generate search points within the KML polygon boundary. Creates grid points and search tasks for all categories in the DB:
 
 ```bash
-make run ARGS='sample --kml boundary.kml'
+make run ARGS='sample --kml riyadh-final-map.kml'
 ```
 
 ### 2. Extract
@@ -45,10 +45,10 @@ Search Google Maps at each grid point and extract business listings. Results are
 
 ```bash
 # Extract all categories (4 parallel browsers, max 10 results per point)
-make run ARGS='extract --kml boundary.kml --workers 4 --max-results 10'
+make run ARGS='extract --kml riyadh-final-map.kml --workers 4 --max-results 10'
 
 # With live progress map at http://localhost:8080
-make run ARGS='extract --kml sample_map.kml --workers 4 --live'
+make run ARGS='extract --kml riyadh-final-map.kml --workers 4 --live'
 ```
 
 Each task logs a breakdown: `20 raw → 3 new, 12 duplicates, 5 filtered out`

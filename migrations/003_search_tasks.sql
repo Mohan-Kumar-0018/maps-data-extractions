@@ -7,7 +7,9 @@ CREATE TABLE IF NOT EXISTS search_tasks (
     total_results   INTEGER NOT NULL DEFAULT 0,
     new_count       INTEGER NOT NULL DEFAULT 0,
     duplicate_count INTEGER NOT NULL DEFAULT 0,
-    filtered_count  INTEGER NOT NULL DEFAULT 0,
+    out_of_bounds_count INTEGER NOT NULL DEFAULT 0,
+    source          TEXT NOT NULL DEFAULT 'grid'
+                    CHECK (source IN ('grid', 'subdivision')),
     search_url      TEXT NOT NULL DEFAULT '',
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
