@@ -27,53 +27,35 @@ Create the database tables:
 make setup-db
 ```
 
-Place your KML polygon boundary file as `final_file_path.kml` in the project root.
-
 ## Pipeline
 
-The pipeline has 5 steps. Each step is resumable — if interrupted, re-run the same command to pick up where it left off.
+Each step is resumable — if interrupted, re-run the same command to pick up where it left off.
 
-### 1. Add categories
+### 1. Sample
 
-Define the business categories to search for:
-
-```bash
-make run ARGS='add-category "Restaurants & Cafes" "Hospitals" "Schools"'
-make run ARGS="list-categories"
-```
-
-### 2. Sample
-
-Generate search points within the KML polygon boundary. Points are stored in the DB and reused across categories:
+Generate search points within the KML polygon boundary. Creates grid points and search tasks for all categories in the DB:
 
 ```bash
-# Generate grid points for all categories
-make run ARGS="sample"
-
-# Or for a single category
-make run ARGS='sample --category "Restaurants & Cafes"'
+make run ARGS='sample --kml boundary.kml'
 ```
 
-### 3. Extract
+### 2. Extract
 
 Search Google Maps at each grid point and extract business listings. Results are filtered by the polygon boundary and deduplicated by `place_id`:
 
 ```bash
 # Extract all categories (4 parallel browsers, max 10 results per point)
-make run ARGS="extract --workers 4 --max-results 10"
-
-# Single category
-make run ARGS='extract --category "Restaurants & Cafes" --workers 4'
+make run ARGS='extract --kml boundary.kml --workers 4 --max-results 10'
 
 # With live progress map at http://localhost:8080
-make run ARGS="extract --workers 4 --live"
+make run ARGS='extract --kml sample_map.kml --workers 4 --live'
 ```
 
 Each task logs a breakdown: `20 raw → 3 new, 12 duplicates, 5 filtered out`
 
 Screenshots are saved to `output/screenshots/{search_task_id}.png`.
 
-### 4. Enrich
+### 3. Enrich
 
 Visit each business's Google Maps detail page to extract phone, website, address, and review count:
 
@@ -84,7 +66,7 @@ make run ARGS="enrich --workers 4"
 make run ARGS="enrich --workers 4 --limit 100"
 ```
 
-### 5. Contact
+### 4. Contact
 
 Extract emails, phone numbers, and social media links from business websites:
 

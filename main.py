@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """CLI entry point for the Google Maps polygon scraper.
 
-Three-step resumable pipeline:
-  python main.py add-category "restaurants" "hospitals" "schools"
+Resumable pipeline:
   python main.py sample  --kml boundary.kml
   python main.py extract --workers 4 --max-results 10
+  python main.py enrich  --workers 4
+  python main.py contact --workers 4
 """
 
 import argparse
@@ -76,22 +77,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="command")
 
-    # ── add-category ────────────────────────────────────────────────
-    ac = sub.add_parser("add-category", help="Add one or more search categories to the DB")
-    ac.add_argument("names", nargs="+", help="Category names (e.g. 'restaurants' 'hospitals')")
-
-    # ── list-categories ─────────────────────────────────────────────
-    sub.add_parser("list-categories", help="List all categories in the DB")
-
     # ── sample ──────────────────────────────────────────────────────
     sp = sub.add_parser("sample", help="Parse KML and store grid points in DB")
-    sp.add_argument("--kml", default=KML_FILE_PATH, help=f"KML polygon file (default: {KML_FILE_PATH})")
-    sp.add_argument("--category", default=None, help="Single category (default: all categories in DB)")
+    sp.add_argument("--kml", required=True, help="KML polygon file (required)")
 
     # ── extract ─────────────────────────────────────────────────────
     ep = sub.add_parser("extract", help="Extract businesses from pending search tasks (resumable)")
-    ep.add_argument("--kml", default=KML_FILE_PATH, help=f"KML polygon file (default: {KML_FILE_PATH})")
-    ep.add_argument("--category", default=None, help="Single category (default: all categories)")
+    ep.add_argument("--kml", required=True, help="KML polygon file (required)")
     ep.add_argument("--workers", type=int, default=4, help="Number of parallel browser workers (default: 4)")
     ep.add_argument("--max-results", type=int, default=20, help="Max results per search point (default: 20)")
     ep.add_argument("--live", action="store_true", help="Start live progress dashboard")
@@ -127,34 +119,6 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-# ── add-category ────────────────────────────────────────────────────
-
-def cmd_add_category(args: argparse.Namespace) -> None:
-    db = ListingsDB()
-    try:
-        for name in args.names:
-            db.insert_category(name)
-            logger.info(f"Added category: {name}")
-    finally:
-        db.close()
-
-
-# ── list-categories ─────────────────────────────────────────────────
-
-def cmd_list_categories(args: argparse.Namespace) -> None:
-    db = ListingsDB()
-    try:
-        categories = db.list_categories()
-        if not categories:
-            logger.info("No categories found. Use 'add-category' to add some.")
-            return
-        logger.info(f"Found {len(categories)} categories:")
-        for cat in categories:
-            print(f"  [{cat['id']}] {cat['name']}")
-    finally:
-        db.close()
-
-
 # ── Step 1: sample ──────────────────────────────────────────────────
 
 def cmd_sample(args: argparse.Namespace) -> None:
@@ -172,15 +136,12 @@ def cmd_sample(args: argparse.Namespace) -> None:
         point_ids = db.insert_grid_points(grid_points, zoom, kml_path)
         logger.info(f"Grid points in DB: {len(point_ids)} (new + existing)")
 
-        # Step 2: Determine which categories to create search tasks for
-        if args.category:
-            categories = [args.category]
-        else:
-            cats = db.list_categories()
-            if not cats:
-                logger.error("No categories in DB. Use 'add-category' first, or pass --category.")
-                return
-            categories = [c["name"] for c in cats]
+        # Step 2: Get all categories from DB
+        cats = db.list_categories()
+        if not cats:
+            logger.error("No categories in DB.")
+            return
+        categories = [c["name"] for c in cats]
 
         # Step 3: Create search tasks for each category (ON CONFLICT DO NOTHING)
         total_new = 0
@@ -208,22 +169,21 @@ def cmd_extract(args: argparse.Namespace) -> None:
     db = ListingsDB()
 
     # Reset any tasks left as in_progress from a previous interrupted run
-    reset_count = db.reset_in_progress_tasks(args.category)
+    reset_count = db.reset_in_progress_tasks()
     if reset_count:
         logger.info(f"Reset {reset_count} interrupted in_progress tasks back to pending")
 
     # Retry failed tasks if requested
     if args.retry_failed:
-        retry_count = db.reset_failed_tasks(args.category)
+        retry_count = db.reset_failed_tasks()
         if retry_count:
             logger.info(f"Reset {retry_count} failed tasks back to pending for retry")
 
-    # Fetch pending tasks — filtered by category if provided, else all
-    pending = db.fetch_pending_tasks(args.category)
+    # Fetch all pending tasks
+    pending = db.fetch_pending_tasks()
 
     if not pending:
-        label = f"category '{args.category}'" if args.category else "any category"
-        logger.info(f"No pending tasks for {label}. Nothing to do.")
+        logger.info("No pending tasks. Nothing to do.")
         db.close()
         return
 
@@ -602,11 +562,7 @@ def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
 
-    if args.command == "add-category":
-        cmd_add_category(args)
-    elif args.command == "list-categories":
-        cmd_list_categories(args)
-    elif args.command == "sample":
+    if args.command == "sample":
         cmd_sample(args)
     elif args.command == "extract":
         cmd_extract(args)

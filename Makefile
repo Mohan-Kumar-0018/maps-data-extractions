@@ -2,19 +2,19 @@ VENV := venv
 PYTHON := $(VENV)/bin/python
 PIP := $(VENV)/bin/pip
 
-.PHONY: install run preview test test-extract test-enrich test-contact clean setup-db reset-db dashboard export
+.PHONY: run preview test test-extract test-enrich test-contact clean setup-db reset-db dashboard export
 
 install:
 	$(PIP) install -r requirements.txt
 	$(VENV)/bin/playwright install chromium
 
-run: install
+run:
 	$(PYTHON) main.py $(ARGS)
 
-preview: install
+preview:
 	$(PYTHON) preview.py $(ARGS)
 
-test: install
+test:
 	$(PYTHON) test_single.py $(ARGS)
 
 DB_URL := $(shell $(PYTHON) -c "import yaml; c=yaml.safe_load(open('config.yml'))['database']; print(f\"postgresql://{c['user']}:{c['password']}@{c['host']}:{c['port']}/{c['name']}\")")
@@ -34,7 +34,7 @@ reset-db:
 	psql "$(DB_URL)" -f migrations/003_create_categories.sql
 	psql "$(DB_URL)" -f migrations/004_normalize_sample_points.sql
 
-test-extract: install
+test-extract:
 	@$(PYTHON) -c "\
 import sys, os; \
 from scraper.db import ListingsDB; \
@@ -57,7 +57,7 @@ print(f'Search URL: {url}'); \
 print(f'Screenshot: {ss_path}'); \
 db.close()"
 
-test-enrich: install
+test-enrich:
 	@$(PYTHON) -c "\
 import sys; \
 from scraper.db import ListingsDB; \
@@ -77,7 +77,7 @@ print(f'website: {details[\"website\"]}'); \
 print(f'address: {details[\"address\"]}'); \
 db.close()"
 
-test-contact: install
+test-contact:
 	@$(PYTHON) -c "\
 import sys; \
 from scraper.db import ListingsDB; \
@@ -97,10 +97,10 @@ print(f'Phones: {result[\"phones\"]}'); \
 print(f'Social: {result[\"social_media\"]}'); \
 db.close()"
 
-dashboard: install
+dashboard:
 	$(PYTHON) main.py dashboard $(ARGS)
 
-export: install
+export:
 	$(PYTHON) main.py export $(ARGS)
 
 clean:

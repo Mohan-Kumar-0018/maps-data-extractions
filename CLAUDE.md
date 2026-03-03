@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-A Google Maps web scraper that extracts business data within user-defined polygon areas. Takes a KML file (`final_file_path.kml`) and search categories, then runs a 5-step resumable pipeline: add categories, generate grid points, extract listings, enrich details, extract contacts. Stores everything in PostgreSQL.
+A Google Maps web scraper that extracts business data within user-defined polygon areas. Takes a KML file (via `--kml` flag) and search categories, then runs a 5-step resumable pipeline: add categories, generate grid points, extract listings, enrich details, extract contacts. Stores everything in PostgreSQL.
 
 ## Commands
 
@@ -20,14 +20,10 @@ make setup-db                   # Run all migrations
 make reset-db                   # Drop all tables and recreate (dev only)
 
 # Pipeline (all via make run ARGS="...")
-make run ARGS='add-category "restaurants" "hospitals"'
-make run ARGS="list-categories"
-make run ARGS="sample"
-make run ARGS='sample --kml other.kml'
-make run ARGS='sample --category "restaurants"'
-make run ARGS="extract --workers 4 --max-results 10"
-make run ARGS='extract --category "restaurants" --workers 4 --live'
-make run ARGS='extract --retry-failed --workers 4'
+make run ARGS='sample --kml boundary.kml'
+make run ARGS='extract --kml boundary.kml --workers 4 --max-results 10'
+make run ARGS='extract --kml boundary.kml --workers 4 --live'
+make run ARGS='extract --kml boundary.kml --retry-failed --workers 4'
 make run ARGS="enrich --workers 4"
 make run ARGS='enrich --retry-failed --workers 4'
 make run ARGS="contact --workers 4 --limit 100"
@@ -74,12 +70,12 @@ screenshots: false   # set true to save screenshots during extraction
 - `proxies` (optional): list of proxy URLs for round-robin rotation during extraction/enrichment.
 - `user_agents` (optional): list of user-agent strings for round-robin rotation (defaults to built-in Chrome UA).
 
-KML polygon boundary file: `final_file_path.kml` in project root (overridable with `--kml`).
+KML polygon boundary file: passed via `--kml` flag (required for `sample`, defaults to `final_file_path.kml` for `extract` and `dashboard`).
 
 ## Architecture
 
 ```
-main.py                  # CLI: add-category, list-categories, sample, extract, enrich, contact, export, dashboard
+main.py                  # CLI: sample, extract, enrich, contact, export, dashboard
 scraper/
   browser.py             # Playwright automation: search_and_extract(), extract_place_details()
   db.py                  # ListingsDB class — all PostgreSQL operations
@@ -110,12 +106,11 @@ listings                                         — extracted businesses
 ### Pipeline & Data Flow
 
 ```
-1. add-category → rows in categories table
-2. sample       → KML → grid_points + search_tasks (both idempotent)
-3. extract      → pending search tasks → browser search → listings (resumable, adaptive subdivision)
-4. enrich       → pending info_status → visit detail pages → phone, website, address, reviews
-5. contact      → pending contact_status + has website → crawl site → emails, phones, social links
-6. export       → listings → CSV or JSON file in output/
+1. sample       → KML → grid_points + search_tasks (both idempotent)
+2. extract      → pending search tasks → browser search → listings (resumable, adaptive subdivision)
+3. enrich       → pending info_status → visit detail pages → phone, website, address, reviews
+4. contact      → pending contact_status + has website → crawl site → emails, phones, social links
+5. export       → listings → CSV or JSON file in output/
 ```
 
 Each step is resumable: uses `claim_*()` (atomic `UPDATE WHERE status='pending'`) then `mark_*_done/failed()`. Interrupted runs reset `in_progress` back to `pending` on restart. Use `--retry-failed` on extract/enrich/contact to also reset `failed` back to `pending`.
