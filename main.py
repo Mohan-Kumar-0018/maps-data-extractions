@@ -428,6 +428,11 @@ def cmd_contact(args: argparse.Namespace) -> None:
     """Visit business websites to extract emails, phones, and social media links."""
     db = ListingsDB()
 
+    # Mark listings without a website as done (nothing to crawl)
+    skipped = db.skip_contacts_without_website()
+    if skipped:
+        logger.info(f"Skipped {skipped} listings with no website")
+
     # Reset any in_progress contacts from a previous interrupted run
     reset_count = db.reset_in_progress_contacts()
     if reset_count:

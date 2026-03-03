@@ -414,6 +414,17 @@ class ListingsDB:
         with self._conn.cursor() as cur:
             cur.execute(sql, (row_id,))
 
+    def skip_contacts_without_website(self) -> int:
+        """Mark pending listings with no website as skipped (nothing to crawl)."""
+        sql = """
+            UPDATE listings
+            SET contact_status = 'skipped', updated_at = NOW()
+            WHERE contact_status = 'pending' AND (website IS NULL OR website = '')
+        """
+        with self._conn.cursor() as cur:
+            cur.execute(sql)
+            return cur.rowcount
+
     def reset_in_progress_contacts(self) -> int:
         """Reset stale in_progress contacts back to pending."""
         sql = """

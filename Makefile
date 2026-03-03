@@ -20,19 +20,18 @@ test:
 DB_URL := $(shell $(PYTHON) -c "import yaml; c=yaml.safe_load(open('config.yml'))['database']; print(f\"postgresql://{c['user']}:{c['password']}@{c['host']}:{c['port']}/{c['name']}\")")
 
 setup-db:
-	psql "$(DB_URL)" -f migrations/001_create_places_info.sql
-	psql "$(DB_URL)" -f migrations/002_create_sample_points.sql
-	psql "$(DB_URL)" -f migrations/003_create_categories.sql
-	psql "$(DB_URL)" -f migrations/004_normalize_sample_points.sql
+	psql "$(DB_URL)" -f migrations/001_categories.sql
+	psql "$(DB_URL)" -f migrations/002_grid_points.sql
+	psql "$(DB_URL)" -f migrations/003_search_tasks.sql
+	psql "$(DB_URL)" -f migrations/004_listings.sql
 
 reset-db:
+	psql "$(DB_URL)" -c "DROP TABLE IF EXISTS listings CASCADE;"
 	psql "$(DB_URL)" -c "DROP TABLE IF EXISTS search_tasks CASCADE;"
 	psql "$(DB_URL)" -c "DROP TABLE IF EXISTS grid_points CASCADE;"
-	psql "$(DB_URL)" -c "DROP TABLE IF EXISTS listings CASCADE;"
-	psql "$(DB_URL)" -c "DROP TABLE IF EXISTS categories CASCADE;"
-	psql "$(DB_URL)" -f migrations/001_create_places_info.sql
-	psql "$(DB_URL)" -f migrations/003_create_categories.sql
-	psql "$(DB_URL)" -f migrations/004_normalize_sample_points.sql
+	psql "$(DB_URL)" -f migrations/002_grid_points.sql
+	psql "$(DB_URL)" -f migrations/003_search_tasks.sql
+	psql "$(DB_URL)" -f migrations/004_listings.sql
 
 test-extract:
 	@$(PYTHON) -c "\

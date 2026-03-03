@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS listings (
     website_phone   TEXT NOT NULL DEFAULT '',
     social_media    TEXT NOT NULL DEFAULT '',
     contact_status  TEXT NOT NULL DEFAULT 'pending',
+    search_task_id  BIGINT REFERENCES search_tasks(id),
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
