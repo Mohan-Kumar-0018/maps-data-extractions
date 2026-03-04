@@ -106,8 +106,8 @@ def build_parser() -> argparse.ArgumentParser:
     ct.add_argument("--retry-failed", action="store_true", help="Reset failed contacts to pending before processing")
 
     # ── export ─────────────────────────────────────────────────────────
-    ex = sub.add_parser("export", help="Export listings to CSV or JSON")
-    ex.add_argument("--format", choices=["csv", "json"], default="csv", help="Output format (default: csv)")
+    ex = sub.add_parser("export", help="Export listings to CSV, JSON, or XLSX")
+    ex.add_argument("--format", choices=["csv", "json", "xlsx"], default="csv", help="Output format (default: csv)")
     ex.add_argument("--output", "-o", default=None, help="Output file path (default: auto-generated in output/)")
     ex.add_argument("--category", default=None, help="Single category (default: all)")
 
@@ -546,6 +546,16 @@ def cmd_export(args: argparse.Namespace) -> None:
             writer = csv.DictWriter(f, fieldnames=rows[0].keys())
             writer.writeheader()
             writer.writerows(rows)
+    elif args.format == "xlsx":
+        from openpyxl import Workbook
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Listings"
+        headers = list(rows[0].keys())
+        ws.append(headers)
+        for row in rows:
+            ws.append([row[h] for h in headers])
+        wb.save(out_path)
     else:
         with open(out_path, "w", encoding="utf-8") as f:
             json.dump(rows, f, indent=2, default=str)
